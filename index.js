@@ -238,40 +238,39 @@ async function summarizeMessages(transcript, onWait) {
  * les sauts de ligne (puis sur les espaces) pour ne pas casser un mot.
  */
 /**
- * Découpe le texte de résumé en sections par en-tête Markdown gras (**...**).
- * Chaque section = { title, emoji, content }.
- * Si une section dépasse 4000 chars, elle est sous-découpée par blocs de lignes.
+ * Découpe le texte de résumé en sections, UNIQUEMENT sur les vrais en-têtes :
+ * une ligne ENTIÈREMENT en gras (ex: "**🤬 Gros mots / insultes**").
+ * Le gras "inline" (ex: "**Pseudo** : message") n'est PAS un séparateur.
+ * Une section trop longue (> 4096) est sous-découpée par blocs de lignes.
  */
 function splitBySection(text) {
-  const SECTION_RE = /^(\*\*[^*\n]+\*\*)/m;
-  const parts = text.split(/(?=^\*\*[^*\n]+\*\*)/m).filter((p) => p.trim());
+  const MAX = 4096; // limite Discord par embed
+  // Lookahead : début de ligne = **...** suivi seulement d'espaces jusqu'à la fin de ligne
+  const HEADER_LINE = /(?=^\*\*[^*\n]+\*\*[ \t]*$)/m;
+  const parts = text.split(HEADER_LINE).filter((p) => p.trim());
   const sections = [];
 
   for (const part of parts) {
-    const headerMatch = part.match(SECTION_RE);
-    const header  = headerMatch ? headerMatch[1] : null;
-    const content = header ? part.slice(header.length).trim() : part.trim();
-
-    // Si le contenu d'une section dépasse 4000 chars, on le sous-découpe par blocs
-    const full = header ? `${header}\n${content}` : content;
-    if (full.length <= 4000) {
+    const full = part.trim();
+    if (full.length <= MAX) {
       sections.push(full);
-    } else {
-      const lines = full.split('\n');
-      let chunk = '';
-      for (const line of lines) {
-        if ((chunk + '\n' + line).length > 4000) {
-          if (chunk) sections.push(chunk.trim());
-          chunk = line;
-        } else {
-          chunk = chunk ? chunk + '\n' + line : line;
-        }
-      }
-      if (chunk) sections.push(chunk.trim());
+      continue;
     }
+    // Section trop longue -> sous-découpage par blocs de lignes (pas une ligne par message)
+    const lines = full.split('\n');
+    let chunk = '';
+    for (const line of lines) {
+      if ((chunk + '\n' + line).length > MAX) {
+        if (chunk) sections.push(chunk.trim());
+        chunk = line.length > MAX ? line.slice(0, MAX) : line;
+      } else {
+        chunk = chunk ? chunk + '\n' + line : line;
+      }
+    }
+    if (chunk) sections.push(chunk.trim());
   }
 
-  return sections.length ? sections : [text.slice(0, 4000)];
+  return sections.length ? sections : [text.slice(0, MAX)];
 }
 
 /** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
