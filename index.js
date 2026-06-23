@@ -163,17 +163,21 @@ async function summarizeMessages(transcript, onWait) {
     "EN FRANÇAIS destiné à l'équipe de modération, structuré EXACTEMENT avec ces sections " +
     "(garde les titres en gras et les emojis) :\n\n" +
     "**👥 Membres ayant parlé**\n" +
-    "Liste les pseudos qui ont participé, du plus actif au moins actif (avec le nombre de messages si possible).\n\n" +
+    "Liste les pseudos du plus actif au moins actif avec le nombre de messages. " +
+    "Chaque pseudo doit être encadré de backticks : `pseudo` (58 messages).\n\n" +
     "**💬 Sujets principaux**\n" +
-    "Les principaux sujets de conversation, en puces.\n\n" +
+    "Les principaux sujets de conversation, en puces. " +
+    "Si tu mentionnes un pseudo dans cette section, mets-le en backticks : `pseudo`.\n\n" +
     "**⚔️ Embrouilles / tensions**\n" +
-    "Décris les disputes, tensions ou conflits entre membres. Précise qui est impliqué. " +
+    "Décris les disputes, tensions ou conflits entre membres. " +
+    "Mets TOUS les pseudos impliqués en backticks : `pseudo`. " +
     "Si aucune embrouille, écris simplement « Aucune embrouille détectée. »\n\n" +
     "**🤬 Gros mots / insultes**\n" +
     "Liste CHAQUE message contenant une insulte, une vulgarité ou un gros mot, au format : " +
-    "« Pseudo : message exact ». Recopie le message tel quel. " +
+    "• `pseudo` : message exact\n" +
+    "Recopie le message tel quel sans le censurer. " +
     "Si aucun gros mot, écris simplement « Aucun gros mot détecté. »\n\n" +
-    "Sois factuel et exhaustif, n'invente rien, ne censure pas les gros mots dans la dernière section.";
+    "RÈGLE ABSOLUE : Tout pseudo (nom d'utilisateur Discord) doit toujours être écrit entre backticks `comme ça` dans TOUTES les sections. Ne fais aucune exception.";
 
   const body = JSON.stringify({
     system_instruction: { parts: [{ text: systemInstruction }] },
