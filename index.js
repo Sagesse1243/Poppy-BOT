@@ -222,8 +222,7 @@ client.on(Events.MessageCreate, async (message) => {
     const channelRow = new ActionRowBuilder().addComponents(
       new ChannelSelectMenuBuilder()
         .setCustomId('say_channel_select')
-        .setPlaceholder('📌 Choisir le salon de publication...')
-        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        .setPlaceholder('📌 Choisir le salon de publication...'),
     );
 
     const fontRow = new ActionRowBuilder().addComponents(
