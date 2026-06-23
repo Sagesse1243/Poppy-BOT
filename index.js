@@ -103,7 +103,10 @@ function parseUserId(input) {
   return match ? match[1] : null;
 }
 
-function parseHexColor(input, fallback = 0x9b59b6) {
+// Couleur principale rose
+const PINK = 0xFF1493;
+
+function parseHexColor(input, fallback = PINK) {
   if (!input) return fallback;
   const clean = input.trim().replace(/^#/, '');
   if (/^[0-9a-fA-F]{6}$/.test(clean)) return parseInt(clean, 16);
@@ -289,9 +292,12 @@ client.on(Events.MessageCreate, async (message) => {
       : '*Aucun co-proprietaire enregistre.*';
 
     const embed = new EmbedBuilder()
-      .setColor(0x9b59b6)
-      .setTitle('👑 Co-proprietaires autorises')
-      .setDescription(`**Createur originel :** <@${guild.ownerId}>\n\n**Co-proprietaires :**\n${list}`)
+      .setColor(PINK)
+      .setTitle('🌸 Co-propriétaires — Poppy Bot')
+      .setDescription(
+        `> **Créateur originel**\n> <@${guild.ownerId}>\n\n> **Co-propriétaires autorisés**\n${list}`,
+      )
+      .setFooter({ text: 'Poppy Bot  •  Gestion des accès' })
       .setTimestamp();
     return message.reply({ embeds: [embed] });
   }
@@ -490,41 +496,40 @@ function buildDashboard() {
   };
 
   const embed = new EmbedBuilder()
-    .setColor(0x9b59b6)
-    .setTitle('⚙️ Tableau de bord')
-    .setDescription('Configuration actuelle du bot. Utilise les boutons pour modifier.')
+    .setColor(PINK)
+    .setTitle('🌸 Tableau de bord — Poppy Bot')
+    .setDescription(
+      '> Bienvenue dans le panneau de configuration.\n> Utilise les boutons ci-dessous pour modifier les parametres.',
+    )
     .addFields(
-      { name: '📌 Salon des alertes',  value: fmtChannel(config.alertChannelId),   inline: false },
-      { name: '👋 Salon de bienvenue', value: fmtChannel(config.welcomeChannelId), inline: false },
-      { name: '💜 Twitch suivi',       value: fmtText(config.twitchUsername),       inline: true  },
-      { name: '🎵 TikTok suivi',       value: fmtText(config.tiktokUsername),       inline: true  },
-      { name: '🔔 Ping des lives',     value: fmtPing(config),                      inline: false },
+      { name: '─────────────────────', value: '**📡  Alertes Live**', inline: false },
+      { name: '📌 Salon des alertes',  value: fmtChannel(config.alertChannelId), inline: true },
+      { name: '🔔 Ping',              value: fmtPing(config),                    inline: true },
+      { name: '─────────────────────', value: '**🎥  Streams suivis**', inline: false },
+      { name: '💜 Twitch',            value: fmtText(config.twitchUsername),      inline: true },
+      { name: '🎵 TikTok',            value: fmtText(config.tiktokUsername),      inline: true },
+      { name: '─────────────────────', value: '**👋  Bienvenue**', inline: false },
+      { name: '💬 Salon',             value: fmtChannel(config.welcomeChannelId), inline: true },
       {
-        name: '📸 Image alertes live',
-        value: config.liveAlertImageUrl ? `[Voir l'image](${config.liveAlertImageUrl})` : '`non configuree`',
-        inline: false,
-      },
-      {
-        name: '🖼️ Image de bienvenue',
+        name: '🖼️ Image de fond',
         value: config.welcomeImageUrl ? `[Voir l'image](${config.welcomeImageUrl})` : '`non configuree`',
-        inline: false,
+        inline: true,
       },
     )
+    .setFooter({ text: 'Poppy Bot  •  Configuration' })
     .setTimestamp();
 
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('dash_channels').setLabel('Modifier Salons').setEmoji('📌').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('dash_streams').setLabel('Configurer Twitch/TikTok').setEmoji('💜').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('dash_channels').setLabel('Salons').setEmoji('📌').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('dash_streams').setLabel('Twitch / TikTok').setEmoji('🎥').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('dash_ping').setLabel('Ping Lives').setEmoji('🔔').setStyle(ButtonStyle.Primary),
   );
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('dash_welcome_image').setLabel('Image Bienvenue').setEmoji('🖼️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('dash_refresh').setLabel('Rafraichir').setEmoji('🔄').setStyle(ButtonStyle.Success),
   );
-  const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('dash_ping').setLabel('Ping des lives').setEmoji('🔔').setStyle(ButtonStyle.Danger),
-  );
 
-  return { embed, rows: [row1, row2, row3] };
+  return { embed, rows: [row1, row2] };
 }
 
 // --- Modal : salons ---
@@ -755,15 +760,17 @@ async function checkLives() {
         : null;
 
       const embed = new EmbedBuilder()
-        .setColor(0x9146ff)
-        .setAuthor({ name: 'Twitch • EN DIRECT' })
-        .setTitle(stream.title || `${config.twitchUsername} est en live !`)
+        .setColor(PINK)
+        .setAuthor({ name: '🔴  Twitch — EN DIRECT' })
+        .setTitle(`🌸  ${stream.title || `${config.twitchUsername} est en live !`}`)
         .setURL(url)
-        .setDescription(`🔴 **${config.twitchUsername}** est en direct sur Twitch !\n\n${url}`)
-        .addFields(
-          { name: 'Jeu / Categorie', value: stream.game_name || 'Inconnu', inline: true },
-          { name: 'Spectateurs',     value: String(stream.viewer_count ?? 0), inline: true },
+        .setDescription(
+          `> **${config.twitchUsername}** est en direct sur Twitch !\n\n` +
+          `**🎮 Jeu :** ${stream.game_name || 'Inconnu'}\n` +
+          `**👥 Spectateurs :** ${stream.viewer_count ?? 0}\n\n` +
+          `🔗 ${url}`,
         )
+        .setFooter({ text: 'Poppy Bot  •  Alerte Live' })
         .setTimestamp();
       const liveImg = config.liveAlertImageUrl && isValidUrl(config.liveAlertImageUrl)
         ? config.liveAlertImageUrl
@@ -839,11 +846,15 @@ async function sendTikTokAlert(username) {
   const config = getConfig();
   const url = `https://www.tiktok.com/@${username}/live`;
   const embed = new EmbedBuilder()
-    .setColor(0xff0050)
-    .setAuthor({ name: 'TikTok • EN DIRECT' })
-    .setTitle(`${username} est en live !`)
+    .setColor(PINK)
+    .setAuthor({ name: '🔴  TikTok — EN DIRECT' })
+    .setTitle(`🌸  @${username} est en live !`)
     .setURL(url)
-    .setDescription(`🔴 **@${username}** est en direct sur TikTok !\n\n${url}`)
+    .setDescription(
+      `> **@${username}** est en direct sur TikTok !\n\n` +
+      `🔗 ${url}`,
+    )
+    .setFooter({ text: 'Poppy Bot  •  Alerte Live' })
     .setTimestamp();
 
   if (config.liveAlertImageUrl && isValidUrl(config.liveAlertImageUrl)) {
@@ -866,13 +877,15 @@ client.on(Events.GuildMemberAdd, async (member) => {
   if (!channel || !channel.isTextBased()) return;
 
   const embed = new EmbedBuilder()
-    .setColor(0x9b59b6)
-    .setTitle('👋 Bienvenue !')
+    .setColor(PINK)
+    .setTitle(`🌸  Bienvenue sur ${member.guild.name} !`)
     .setDescription(
-      `Bienvenue **${member.user.username}** sur **${member.guild.name}** !\n` +
-      `Nous sommes désormais **${member.guild.memberCount}** membres. 🎉`,
+      `> Hey ${member.toString()} ! On est ravis de t'accueillir parmi nous 🎀\n\n` +
+      `**👤 Pseudo :** ${member.user.username}\n` +
+      `**👥 Membre n°** ${member.guild.memberCount}`,
     )
     .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
+    .setFooter({ text: `${member.guild.name}  •  Bienvenue !` })
     .setTimestamp();
 
   if (config.welcomeImageUrl && isValidUrl(config.welcomeImageUrl)) {
@@ -880,7 +893,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
   }
 
   await channel.send({
-    content: `Hé ${member.toString()}, bienvenue parmi nous ! 💜`,
+    content: `✨ ${member.toString()}`,
     embeds: [embed],
     allowedMentions: { users: [member.id] },
   });
