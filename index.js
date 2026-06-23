@@ -397,6 +397,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       switch (interaction.customId) {
         case 'say_open':           return interaction.showModal(buildSayModal());
         case 'dash_channels':      return interaction.showModal(buildChannelsModal());
+        case 'dash_welcome_channel': return interaction.showModal(buildChannelsModal());
         case 'dash_streams':       return interaction.showModal(buildStreamsModal());
         case 'dash_welcome_image': return interaction.showModal(buildWelcomeImageModal());
         case 'dash_ping':          return interaction.showModal(buildPingModal());
@@ -578,7 +579,7 @@ function buildDashboard() {
     .addSectionComponents(
       section('👋🎀', 'Salon de bienvenue',
         `Configuration du salon d'accueil des nouveaux membres.\n> 💖 **Salon :** ${fmtChannel(config.welcomeChannelId)}`,
-        'dash_channels'),
+        'dash_welcome_channel'),
     )
     .addSeparatorComponents(sep())
     .addSectionComponents(
