@@ -39,7 +39,6 @@ const {
   EmbedBuilder,
   MessageFlags,
 } = require('discord.js');
-const Anthropic = require('@anthropic-ai/sdk');
 
 // ----------------------------------------------------------------------------
 //  CONSTANTES / FICHIERS
@@ -122,11 +121,13 @@ function pe(description, title) {
 }
 
 // ----------------------------------------------------------------------------
-//  RESUME IA (Claude Haiku) — commande +resume
+//  RESUME IA (Google Gemini, gratuit) — commande +resume
 // ----------------------------------------------------------------------------
 
-// Client Anthropic (lit ANTHROPIC_API_KEY depuis l'environnement). null si absent.
-const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
+// Modele Gemini gratuit (Google AI Studio). Surchargage possible via .env.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// Active uniquement si une cle est presente
+const geminiReady = !!process.env.GEMINI_API_KEY;
 
 /**
  * Recupere les `limit` derniers messages d'un salon (pagination par lots de 100).
@@ -149,24 +150,37 @@ async function fetchMessages(channel, limit) {
 }
 
 /**
- * Demande a Claude Haiku un resume de moderation du transcript fourni.
- * Renvoie le texte du resume.
+ * Demande a Google Gemini un resume de moderation du transcript fourni.
+ * Appel REST direct (aucune dependance npm). Renvoie le texte du resume.
  */
 async function summarizeMessages(transcript) {
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5',
-    max_tokens: 1024,
-    system:
-      "Tu es un assistant de modération pour un serveur Discord. On te donne une " +
-      "transcription de messages récents (format 'Pseudo: message'). Rédige un " +
-      "résumé clair et concis EN FRANÇAIS destiné à l'équipe de modération. Couvre : " +
-      "les principaux sujets discutés, l'ambiance générale (calme/tendue/animée), " +
-      "les éventuels conflits, propos problématiques ou signalements potentiels, et " +
-      "les membres les plus actifs. Utilise des puces. Sois factuel, ne invente rien.",
-    messages: [{ role: 'user', content: transcript }],
+  const systemInstruction =
+    "Tu es un assistant de modération pour un serveur Discord. On te donne une " +
+    "transcription de messages récents (format 'Pseudo: message'). Rédige un " +
+    "résumé clair et concis EN FRANÇAIS destiné à l'équipe de modération. Couvre : " +
+    "les principaux sujets discutés, l'ambiance générale (calme/tendue/animée), " +
+    "les éventuels conflits, propos problématiques ou signalements potentiels, et " +
+    "les membres les plus actifs. Utilise des puces. Sois factuel, n'invente rien.";
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemInstruction }] },
+      contents: [{ parts: [{ text: transcript }] }],
+      generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+    }),
   });
-  const textBlock = response.content.find((b) => b.type === 'text');
-  return textBlock ? textBlock.text : 'Résumé indisponible.';
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Gemini API ${res.status} : ${errText.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
+  return text.trim() || 'Résumé indisponible.';
 }
 
 /** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
@@ -390,8 +404,8 @@ client.on(Events.MessageCreate, async (message) => {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
       return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
     }
-    if (!anthropic) {
-      return message.reply({ embeds: [pe('❌ Le résumé IA est désactivé : `ANTHROPIC_API_KEY` manquante dans le `.env`.')] });
+    if (!geminiReady) {
+      return message.reply({ embeds: [pe('❌ Le résumé IA est désactivé : `GEMINI_API_KEY` manquante dans le `.env`.')] });
     }
 
     // Nombre de messages : 50 par defaut, max 500
@@ -424,7 +438,7 @@ client.on(Events.MessageCreate, async (message) => {
           { name: '📍 Salon', value: `<#${message.channelId}>`, inline: true },
           { name: '👤 Demandé par', value: message.author.toString(), inline: true },
         )
-        .setFooter({ text: '🌸 Poppy Bot • Résumé généré par Claude' })
+        .setFooter({ text: '🌸 Poppy Bot • Résumé généré par Gemini' })
         .setTimestamp();
 
       // Envoi dans le salon modo si configuré, sinon dans le salon courant
