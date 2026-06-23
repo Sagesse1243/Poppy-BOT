@@ -402,7 +402,10 @@ client.on(Events.MessageCreate, async (message) => {
         },
         {
           name: '🛡️🌸 Modération',
-          value: `\`${PREFIX}resume 50\` (ou 100 / 500) — Résumé IA des derniers messages, envoyé au salon modo`,
+          value:
+            `\`${PREFIX}resume 50\` — Résumé IA des derniers messages (10 à 1000)\n` +
+            `\`${PREFIX}resume @membre\` — Résumé des messages d'une personne\n` +
+            `Le résultat est envoyé dans le salon modo 🌸`,
           inline: false,
         },
         {
@@ -416,7 +419,7 @@ client.on(Events.MessageCreate, async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // ---- +resume <50|100|500> : resume IA des derniers messages ----
+  // ---- +resume [nombre] [@membre] : resume IA des derniers messages ----
   if (command === 'resume' || command === 'résumé' || command === 'summary') {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
       return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
@@ -425,38 +428,63 @@ client.on(Events.MessageCreate, async (message) => {
       return message.reply({ embeds: [pe('❌ Le résumé IA est désactivé : `GEMINI_API_KEY` manquante dans le `.env`.')] });
     }
 
-    // Nombre de messages : 50 par defaut, max 500
-    const ALLOWED = [50, 100, 500];
-    let count = parseInt(args[0], 10);
-    if (!ALLOWED.includes(count)) count = 50;
+    // --- Parsing des arguments : un nombre et/ou une mention de membre ---
+    const MAX_SCAN = 1000;
+    let targetUserId = null;
+    let count = null;
+    for (const arg of args) {
+      const uid = parseUserId(arg);
+      if (uid) { targetUserId = uid; continue; }
+      const n = parseInt(arg, 10);
+      if (!Number.isNaN(n)) count = n;
+    }
+    // Si on cible un membre : on scanne large par defaut pour attraper ses messages
+    if (count === null) count = targetUserId ? 500 : 50;
+    count = Math.min(Math.max(count, 10), MAX_SCAN); // borne 10..1000
 
-    const status = await message.reply({ embeds: [pe(`🧠 Lecture des **${count}** derniers messages et génération du résumé… 🌸`)] });
+    const targetMember = targetUserId
+      ? await message.guild.members.fetch(targetUserId).catch(() => null)
+      : null;
+    const targetName = targetMember ? targetMember.user.username : null;
+
+    const scanLabel = targetUserId
+      ? `messages de **${targetName ?? 'ce membre'}** (sur les ${count} derniers)`
+      : `**${count}** derniers messages`;
+    const status = await message.reply({ embeds: [pe(`🧠 Lecture des ${scanLabel} et génération du résumé… 🌸`)] });
 
     try {
-      const messages = await fetchMessages(message.channel, count);
-      // Ne garde que les messages texte non-bots, format "Pseudo: contenu"
+      let messages = await fetchMessages(message.channel, count);
+      // Filtre : pas de bots, du texte, et (si cible) seulement la personne visee
+      messages = messages.filter(
+        (m) => !m.author.bot && m.content && m.content.trim().length > 0 &&
+               (!targetUserId || m.author.id === targetUserId),
+      );
+
       const transcript = messages
-        .filter((m) => !m.author.bot && m.content && m.content.trim().length > 0)
         .map((m) => `${m.author.username}: ${m.content.replace(/\n+/g, ' ').slice(0, 500)}`)
         .join('\n');
 
       if (!transcript) {
-        return status.edit({ embeds: [pe('ℹ️ Aucun message texte exploitable trouvé.')] });
+        const why = targetUserId
+          ? `Aucun message texte de **${targetName ?? 'ce membre'}** dans les ${count} derniers messages.`
+          : 'Aucun message texte exploitable trouvé.';
+        return status.edit({ embeds: [pe(`ℹ️ ${why}`)] });
       }
 
       const summary = await summarizeMessages(transcript);
 
       const embed = new EmbedBuilder()
         .setColor(PINK)
-        .setTitle('🛡️🌸 Résumé de modération')
+        .setTitle(targetUserId ? `🛡️🌸 Résumé des messages de ${targetName ?? 'membre'}` : '🛡️🌸 Résumé de modération')
         .setDescription(summary.slice(0, 4096))
         .addFields(
-          { name: '📊 Messages analysés', value: `\`${count}\``, inline: true },
+          { name: '📊 Messages analysés', value: `\`${messages.length}\``, inline: true },
           { name: '📍 Salon', value: `<#${message.channelId}>`, inline: true },
           { name: '👤 Demandé par', value: message.author.toString(), inline: true },
         )
         .setFooter({ text: '🌸 Poppy Bot • Résumé généré par Gemini' })
         .setTimestamp();
+      if (targetMember) embed.setThumbnail(targetMember.user.displayAvatarURL({ size: 256 }));
 
       // Envoi dans le salon modo si configuré, sinon dans le salon courant
       const { modChannelId } = getConfig();
@@ -467,9 +495,12 @@ client.on(Events.MessageCreate, async (message) => {
 
       if (modChannel && modChannel.isTextBased()) {
         await modChannel.send({ embeds: [embed] });
-        return status.edit({ embeds: [pe(`✅ Résumé des **${count}** derniers messages envoyé dans <#${modChannel.id}>. 🌸`)] });
+        // Supprime les 2 messages (commande + statut) une fois le résumé envoyé
+        await status.delete().catch(() => {});
+        await message.delete().catch(() => {});
+        return;
       }
-      // Pas de salon modo configuré -> on poste ici
+      // Pas de salon modo configuré -> on poste le résumé ici
       return status.edit({ embeds: [embed] });
     } catch (err) {
       console.error('[RESUME] Erreur :', err);
