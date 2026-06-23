@@ -159,16 +159,26 @@ async function fetchMessages(channel, limit) {
 async function summarizeMessages(transcript) {
   const systemInstruction =
     "Tu es un assistant de modération pour un serveur Discord. On te donne une " +
-    "transcription de messages récents (format 'Pseudo: message'). Rédige un " +
-    "résumé clair et concis EN FRANÇAIS destiné à l'équipe de modération. Couvre : " +
-    "les principaux sujets discutés, l'ambiance générale (calme/tendue/animée), " +
-    "les éventuels conflits, propos problématiques ou signalements potentiels, et " +
-    "les membres les plus actifs. Utilise des puces. Sois factuel, n'invente rien.";
+    "transcription de messages récents (format 'Pseudo: message'). Rédige un compte-rendu " +
+    "EN FRANÇAIS destiné à l'équipe de modération, structuré EXACTEMENT avec ces sections " +
+    "(garde les titres en gras et les emojis) :\n\n" +
+    "**👥 Membres ayant parlé**\n" +
+    "Liste les pseudos qui ont participé, du plus actif au moins actif (avec le nombre de messages si possible).\n\n" +
+    "**💬 Sujets principaux**\n" +
+    "Les principaux sujets de conversation, en puces.\n\n" +
+    "**⚔️ Embrouilles / tensions**\n" +
+    "Décris les disputes, tensions ou conflits entre membres. Précise qui est impliqué. " +
+    "Si aucune embrouille, écris simplement « Aucune embrouille détectée. »\n\n" +
+    "**🤬 Gros mots / insultes**\n" +
+    "Liste CHAQUE message contenant une insulte, une vulgarité ou un gros mot, au format : " +
+    "« Pseudo : message exact ». Recopie le message tel quel. " +
+    "Si aucun gros mot, écris simplement « Aucun gros mot détecté. »\n\n" +
+    "Sois factuel et exhaustif, n'invente rien, ne censure pas les gros mots dans la dernière section.";
 
   const body = JSON.stringify({
     system_instruction: { parts: [{ text: systemInstruction }] },
     contents: [{ parts: [{ text: transcript }] }],
-    generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+    generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
   });
 
   let lastErr = '';
