@@ -119,6 +119,19 @@ function pe(description, title) {
   return e;
 }
 
+/** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
+function buildSayPromptEmbed(channelId, fontLabel) {
+  return new EmbedBuilder()
+    .setColor(PINK)
+    .setTitle("🌸✨ Publication d'un embed ✨🌸")
+    .setDescription(
+      `> 🎀 Configure ta publication ci-dessous, puis clique sur **📝 Ouvrir l'éditeur**.\n\n` +
+      `📌 **Salon :** <#${channelId}>\n` +
+      `🔤 **Police du titre :** ${fontLabel}`,
+    )
+    .setFooter({ text: '🌸 Poppy Bot • Éditeur d’embed' });
+}
+
 function parseHexColor(input, fallback = PINK) {
   if (!input) return fallback;
   const clean = input.trim().replace(/^#/, '');
@@ -267,7 +280,7 @@ client.on(Events.MessageCreate, async (message) => {
     message.delete().catch(() => {});
 
     const prompt = await message.channel.send({
-      content: `📢 **Publication d'un embed**\n📌 **Salon :** <#${message.channelId}> *(change ci-dessous)*\n🔤 **Police :** Normal`,
+      embeds: [buildSayPromptEmbed(message.channelId, 'Normal')],
       components: [channelRow, fontRow, buttonRow],
     });
 
@@ -278,6 +291,43 @@ client.on(Events.MessageCreate, async (message) => {
       promptChannelId: prompt.channelId,
     });
     return;
+  }
+
+  // ---- +tools : liste toutes les commandes ----
+  if (command === 'tools' || command === 'help' || command === 'commands') {
+    const embed = new EmbedBuilder()
+      .setColor(PINK)
+      .setTitle('🌸✨ Commandes de Poppy Bot ✨🌸')
+      .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
+      .setDescription('> 🎀 Voici toutes les commandes disponibles. Le préfixe est **`+`**.')
+      .addFields(
+        {
+          name: '📢🎀 Publication',
+          value: `\`${PREFIX}say\` — Composer et publier un embed (salon + police au choix)`,
+          inline: false,
+        },
+        {
+          name: '⚙️💗 Configuration',
+          value: `\`${PREFIX}dashboard\` — Ouvrir le panneau de configuration (alertes, streams, ping, bienvenue)`,
+          inline: false,
+        },
+        {
+          name: '👑🌺 Co-propriétaires',
+          value:
+            `\`${PREFIX}owner list\` — Voir les co-propriétaires\n` +
+            `\`${PREFIX}owner add @membre\` — Ajouter *(super-owner)*\n` +
+            `\`${PREFIX}owner remove @membre\` — Retirer *(super-owner)*`,
+          inline: false,
+        },
+        {
+          name: '🛠️🩷 Utilitaire',
+          value: `\`${PREFIX}tools\` — Afficher ce menu`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: '🌸 Poppy Bot • Liste des commandes' })
+      .setTimestamp();
+    return message.reply({ embeds: [embed] });
   }
 
   // ---- +dashboard : affiche le panneau de config ----
@@ -372,7 +422,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const font = FONT_LABELS[state.font] ?? 'Normal';
       return interaction.update({
-        content: `📢 **Publication d'un embed**\n📌 **Salon :** <#${state.channelId}>\n🔤 **Police :** ${font}`,
+        embeds: [buildSayPromptEmbed(state.channelId ?? interaction.channelId, font)],
       });
     }
 
@@ -386,7 +436,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       sayState.set(interaction.user.id, state);
 
       return interaction.update({
-        content: `📢 **Publication d'un embed**\n📌 **Salon :** <#${state.channelId ?? interaction.channelId}>\n🔤 **Police :** ${FONT_LABELS[state.font] ?? 'Normal'}`,
+        embeds: [buildSayPromptEmbed(state.channelId ?? interaction.channelId, FONT_LABELS[state.font] ?? 'Normal')],
       });
     }
 
