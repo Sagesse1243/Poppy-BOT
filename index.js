@@ -112,6 +112,13 @@ function parseUserId(input) {
 // Couleur principale rose
 const PINK = 0xFF1493;
 
+/** Petit embed rose standard pour toutes les reponses de commandes. */
+function pe(description, title) {
+  const e = new EmbedBuilder().setColor(PINK).setDescription(description);
+  if (title) e.setTitle(title);
+  return e;
+}
+
 function parseHexColor(input, fallback = PINK) {
   if (!input) return fallback;
   const clean = input.trim().replace(/^#/, '');
@@ -225,7 +232,7 @@ client.on(Events.MessageCreate, async (message) => {
   // ---- +say ----
   if (command === 'say') {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
-      return message.reply('⛔ Cette commande est reservee aux owners.');
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
     }
 
     const channelRow = new ActionRowBuilder().addComponents(
@@ -276,9 +283,14 @@ client.on(Events.MessageCreate, async (message) => {
   // ---- +dashboard : affiche le panneau de config ----
   if (command === 'dashboard') {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
-      return message.reply('⛔ Cette commande est reservee aux owners.');
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
     }
-    return message.reply(buildDashboard());
+    try {
+      return await message.reply(buildDashboard());
+    } catch (err) {
+      console.error('[DASHBOARD] Components V2 a echoue, repli sur embed :', err);
+      return message.reply(buildDashboardLegacy()).catch(() => {});
+    }
   }
 
   if (command !== 'owner') return;
@@ -289,7 +301,7 @@ client.on(Events.MessageCreate, async (message) => {
   // +owner list : createur OU co-proprietaire
   if (sub === 'list') {
     if (!isOwnerOrCoOwner(guild, message.author.id)) {
-      return message.reply("⛔ Tu n'es pas autorise a utiliser cette commande.");
+      return message.reply({ embeds: [pe("⛔ Tu n'es pas autorisé à utiliser cette commande.")] });
     }
     const owners = getOwners();
     const list = owners.length
@@ -310,38 +322,38 @@ client.on(Events.MessageCreate, async (message) => {
   // +owner add / remove : TOI UNIQUEMENT (SUPER_OWNER_ID dans .env)
   if (sub === 'add' || sub === 'remove') {
     if (message.author.id !== process.env.SUPER_OWNER_ID) {
-      return message.reply('⛔ Seul le super-owner peut ajouter ou retirer un co-proprietaire.');
+      return message.reply({ embeds: [pe('⛔ Seul le **super-owner** peut ajouter ou retirer un co-propriétaire.')] });
     }
 
     const targetId = parseUserId(args[0]);
     if (!targetId) {
-      return message.reply(`❌ Utilisation : \`${PREFIX}owner ${sub} @mention\` (ou un ID valide).`);
+      return message.reply({ embeds: [pe(`❌ Utilisation : \`${PREFIX}owner ${sub} @mention\` (ou un ID valide).`)] });
     }
     if (targetId === guild.ownerId) {
-      return message.reply('ℹ️ Le createur originel est deja proprietaire par defaut.');
+      return message.reply({ embeds: [pe('ℹ️ Le créateur originel est déjà propriétaire par défaut.')] });
     }
 
     const owners = getOwners();
     if (sub === 'add') {
-      if (owners.includes(targetId)) return message.reply('⚠️ Cette personne est deja co-proprietaire.');
+      if (owners.includes(targetId)) return message.reply({ embeds: [pe('⚠️ Cette personne est déjà co-propriétaire.')] });
       owners.push(targetId);
       setOwners(owners);
-      return message.reply(`✅ <@${targetId}> a ete ajoute aux co-proprietaires.`);
+      return message.reply({ embeds: [pe(`✅ <@${targetId}> a été **ajouté** aux co-propriétaires. 🌸`)] });
     } else {
-      if (!owners.includes(targetId)) return message.reply("⚠️ Cette personne n'est pas dans la liste des co-proprietaires.");
+      if (!owners.includes(targetId)) return message.reply({ embeds: [pe("⚠️ Cette personne n'est pas dans la liste des co-propriétaires.")] });
       setOwners(owners.filter((id) => id !== targetId));
-      return message.reply(`✅ <@${targetId}> a ete retire des co-proprietaires.`);
+      return message.reply({ embeds: [pe(`✅ <@${targetId}> a été **retiré** des co-propriétaires. 🌸`)] });
     }
   }
 
-  return message.reply(
-    [
-      '**Commandes owner :**',
-      `\`${PREFIX}owner add @mention\` — ajouter un co-proprietaire (createur uniquement)`,
-      `\`${PREFIX}owner remove @mention\` — retirer un co-proprietaire (createur uniquement)`,
-      `\`${PREFIX}owner list\` — afficher la liste`,
-    ].join('\n'),
-  );
+  return message.reply({
+    embeds: [pe(
+      `🎀 \`${PREFIX}owner add @mention\` — ajouter un co-propriétaire *(super-owner)*\n` +
+      `🎀 \`${PREFIX}owner remove @mention\` — retirer un co-propriétaire *(super-owner)*\n` +
+      `🎀 \`${PREFIX}owner list\` — afficher la liste`,
+      '🌸 Commandes Owner — Poppy Bot',
+    )],
+  });
 });
 
 // ============================================================================
@@ -352,7 +364,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // ---- Selecteur de salon natif (flux +say) ----
     if (interaction.isChannelSelectMenu() && interaction.customId === 'say_channel_select') {
       if (!isOwnerOrCoOwner(interaction.guild, interaction.user.id)) {
-        return interaction.reply({ content: '⛔ Action reservee aux owners.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ embeds: [pe('⛔ Action réservée aux owners.')], flags: MessageFlags.Ephemeral });
       }
       const state = sayState.get(interaction.user.id) ?? { channelId: interaction.channelId, font: 'normal' };
       state.channelId = interaction.values[0];
@@ -367,7 +379,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // ---- Menu de selection de la police (flux +say) ----
     if (interaction.isStringSelectMenu() && interaction.customId === 'say_font_select') {
       if (!isOwnerOrCoOwner(interaction.guild, interaction.user.id)) {
-        return interaction.reply({ content: '⛔ Action reservee aux owners.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ embeds: [pe('⛔ Action réservée aux owners.')], flags: MessageFlags.Ephemeral });
       }
       const state = sayState.get(interaction.user.id) ?? { channelId: null, font: 'normal' };
       state.font = interaction.values[0];
@@ -380,7 +392,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isButton()) {
       if (!isOwnerOrCoOwner(interaction.guild, interaction.user.id)) {
-        return interaction.reply({ content: '⛔ Action reservee aux owners.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ embeds: [pe('⛔ Action réservée aux owners.')], flags: MessageFlags.Ephemeral });
       }
       switch (interaction.customId) {
         case 'say_open':           return interaction.showModal(buildSayModal());
@@ -388,14 +400,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'dash_streams':       return interaction.showModal(buildStreamsModal());
         case 'dash_welcome_image': return interaction.showModal(buildWelcomeImageModal());
         case 'dash_ping':          return interaction.showModal(buildPingModal());
-        case 'dash_refresh':
-          return interaction.update(buildDashboard());
+        case 'dash_refresh': {
+          try {
+            return await interaction.update(buildDashboard());
+          } catch (err) {
+            console.error('[DASHBOARD] Refresh V2 a echoue, repli sur embed :', err);
+            return interaction.update(buildDashboardLegacy()).catch(() => {});
+          }
+        }
       }
     }
 
     if (interaction.isModalSubmit()) {
       if (!isOwnerOrCoOwner(interaction.guild, interaction.user.id)) {
-        return interaction.reply({ content: '⛔ Action reservee aux owners.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ embeds: [pe('⛔ Action réservée aux owners.')], flags: MessageFlags.Ephemeral });
       }
       if (interaction.customId === 'say_modal')          return handleSayModal(interaction);
       if (interaction.customId === 'channels_modal')     return handleChannelsModal(interaction);
@@ -406,7 +424,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (err) {
     console.error('[ERREUR] Interaction :', err);
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      interaction.reply({ content: '❌ Une erreur est survenue.', flags: MessageFlags.Ephemeral }).catch(() => {});
+      interaction.reply({ embeds: [pe('❌ Une erreur est survenue.')], flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 });
@@ -465,7 +483,7 @@ async function handleSayModal(interaction) {
   let targetChannel = interaction.channel;
   if (state.channelId) {
     try { targetChannel = await client.channels.fetch(state.channelId); } catch {
-      return interaction.reply({ content: `❌ Salon introuvable (\`${state.channelId}\`).`, flags: MessageFlags.Ephemeral });
+      return interaction.reply({ embeds: [pe(`❌ Salon introuvable (\`${state.channelId}\`).`)], flags: MessageFlags.Ephemeral });
     }
   }
 
@@ -480,7 +498,7 @@ async function handleSayModal(interaction) {
     } catch {}
   }
 
-  return interaction.reply({ content: `✅ Embed publie dans <#${targetChannel.id}>.`, flags: MessageFlags.Ephemeral });
+  return interaction.reply({ embeds: [pe(`✅ Embed publié dans <#${targetChannel.id}>. 🌸`)], flags: MessageFlags.Ephemeral });
 }
 
 // ============================================================================
@@ -581,6 +599,50 @@ function buildDashboard() {
   return { components: [container], flags: MessageFlags.IsComponentsV2 };
 }
 
+/**
+ * Version de repli (embed classique) si Components V2 echoue.
+ * Memes customId de boutons -> fonctionnalites identiques.
+ */
+function buildDashboardLegacy() {
+  const config = getConfig();
+  const fmtChannel = (id) => (id ? `<#${id}>` : '`non configuré`');
+  const fmtText    = (v)  => (v  ? `\`${v}\`` : '`non configuré`');
+  const fmtPing = (cfg) => {
+    if (cfg.livePingType === 'here')                        return '`@here`';
+    if (cfg.livePingType === 'role' && cfg.livePingRoleId) return `<@&${cfg.livePingRoleId}>`;
+    if (cfg.livePingType === 'aucun')                      return '`Aucun ping`';
+    return '`@everyone`';
+  };
+
+  const embed = new EmbedBuilder()
+    .setColor(PINK)
+    .setTitle('🌸✨ Configuration de Poppy Bot ✨🌸')
+    .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
+    .setDescription('**Bienvenue dans la configuration !** 🩷\nSélectionne une catégorie ci-dessous. 💗')
+    .addFields(
+      { name: '📡🎀 Salon des alertes',  value: fmtChannel(config.alertChannelId), inline: true },
+      { name: '🔔🌺 Ping des lives',     value: fmtPing(config),                   inline: true },
+      { name: '💜 Twitch',              value: fmtText(config.twitchUsername),     inline: true },
+      { name: '🎵 TikTok',              value: fmtText(config.tiktokUsername),     inline: true },
+      { name: '👋🎀 Salon de bienvenue', value: fmtChannel(config.welcomeChannelId), inline: true },
+      { name: '🖼️🌸 Image de fond',     value: config.welcomeImageUrl ? `[Voir](${config.welcomeImageUrl})` : '`non configurée`', inline: true },
+    )
+    .setFooter({ text: '🌸 Poppy Bot • Panneau de configuration' })
+    .setTimestamp();
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('dash_channels').setLabel('Salons').setEmoji('📡').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('dash_streams').setLabel('Streams').setEmoji('🎥').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('dash_ping').setLabel('Ping').setEmoji('🔔').setStyle(ButtonStyle.Secondary),
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('dash_welcome_image').setLabel('Image bienvenue').setEmoji('🖼️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('dash_refresh').setLabel('Rafraîchir').setEmoji('🔄').setStyle(ButtonStyle.Primary),
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
+}
+
 // --- Modal : salons ---
 function buildChannelsModal() {
   const config = getConfig();
@@ -607,10 +669,10 @@ async function handleChannelsModal(interaction) {
 
   const idOk = (id) => id === '' || /^\d{17,20}$/.test(id);
   if (!idOk(alertChannelId) || !idOk(welcomeChannelId)) {
-    return interaction.reply({ content: '❌ ID invalide (17 a 20 chiffres attendus).', flags: MessageFlags.Ephemeral });
+    return interaction.reply({ embeds: [pe('❌ ID invalide (17 à 20 chiffres attendus).')], flags: MessageFlags.Ephemeral });
   }
   setConfig({ alertChannelId, welcomeChannelId });
-  return interaction.reply({ content: '✅ Salons mis a jour.', flags: MessageFlags.Ephemeral });
+  return interaction.reply({ embeds: [pe('✅ Salons mis à jour. 🌸')], flags: MessageFlags.Ephemeral });
 }
 
 // --- Modal : streams ---
@@ -645,7 +707,7 @@ async function handleStreamsModal(interaction) {
   // Reconnecte le WebSocket TikTok sur le nouveau username
   startTikTokMonitor(tiktokUsername);
 
-  return interaction.reply({ content: '✅ Comptes Twitch/TikTok mis a jour.', flags: MessageFlags.Ephemeral });
+  return interaction.reply({ embeds: [pe('✅ Comptes Twitch/TikTok mis à jour. 🌸')], flags: MessageFlags.Ephemeral });
 }
 
 // --- Modal : image de bienvenue ---
@@ -666,10 +728,10 @@ function buildWelcomeImageModal() {
 async function handleWelcomeImageModal(interaction) {
   const url = interaction.fields.getTextInputValue('welcomeImageUrl').trim();
   if (url !== '' && !isValidUrl(url)) {
-    return interaction.reply({ content: '❌ URL invalide (doit commencer par http:// ou https://).', flags: MessageFlags.Ephemeral });
+    return interaction.reply({ embeds: [pe('❌ URL invalide (doit commencer par http:// ou https://).')], flags: MessageFlags.Ephemeral });
   }
   setConfig({ welcomeImageUrl: url });
-  return interaction.reply({ content: '✅ Image de bienvenue mise a jour.', flags: MessageFlags.Ephemeral });
+  return interaction.reply({ embeds: [pe('✅ Image de bienvenue mise à jour. 🌸')], flags: MessageFlags.Ephemeral });
 }
 
 // --- Modal : ping des lives ---
@@ -721,19 +783,19 @@ async function handlePingModal(interaction) {
 
   if (!VALID_TYPES.includes(livePingType)) {
     return interaction.reply({
-      content: '❌ Type invalide. Choix possibles : `everyone`, `here`, `role`, `aucun`.',
+      embeds: [pe('❌ Type invalide. Choix possibles : `everyone`, `here`, `role`, `aucun`.')],
       flags: MessageFlags.Ephemeral,
     });
   }
   if (livePingType === 'role' && !livePingRoleId) {
     return interaction.reply({
-      content: '❌ Tu dois fournir un ID de role valide quand le type est `role`.',
+      embeds: [pe('❌ Tu dois fournir un ID de rôle valide quand le type est `role`.')],
       flags: MessageFlags.Ephemeral,
     });
   }
   if (liveAlertImageUrl && !isValidUrl(liveAlertImageUrl)) {
     return interaction.reply({
-      content: '❌ URL image invalide (doit commencer par http:// ou https://).',
+      embeds: [pe('❌ URL image invalide (doit commencer par http:// ou https://).')],
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -747,7 +809,7 @@ async function handlePingModal(interaction) {
     'Aucun ping';
 
   return interaction.reply({
-    content: `✅ Ping des lives mis a jour : **${preview}**`,
+    embeds: [pe(`✅ Ping des lives mis à jour : **${preview}** 🌸`)],
     flags: MessageFlags.Ephemeral,
   });
 }
