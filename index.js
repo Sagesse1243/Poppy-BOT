@@ -460,11 +460,7 @@ async function handleSayModal(interaction) {
     }
   }
 
-  await targetChannel.send({
-    content: '@everyone',
-    embeds: [embed],
-    allowedMentions: { parse: ['everyone'] },
-  });
+  await targetChannel.send({ embeds: [embed] });
 
   // Supprime le message de selection (sélecteur de police + bouton)
   if (state.promptId) {
