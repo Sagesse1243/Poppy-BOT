@@ -237,18 +237,41 @@ async function summarizeMessages(transcript, onWait) {
  * Découpe un long texte en morceaux <= maxLen, en coupant de préférence sur
  * les sauts de ligne (puis sur les espaces) pour ne pas casser un mot.
  */
-function splitText(text, maxLen = 4000) {
-  const chunks = [];
-  let rest = text;
-  while (rest.length > maxLen) {
-    let cut = rest.lastIndexOf('\n', maxLen);
-    if (cut < maxLen * 0.5) cut = rest.lastIndexOf(' ', maxLen);
-    if (cut < maxLen * 0.5) cut = maxLen;
-    chunks.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
+/**
+ * Découpe le texte de résumé en sections par en-tête Markdown gras (**...**).
+ * Chaque section = { title, emoji, content }.
+ * Si une section dépasse 4000 chars, elle est sous-découpée par blocs de lignes.
+ */
+function splitBySection(text) {
+  const SECTION_RE = /^(\*\*[^*\n]+\*\*)/m;
+  const parts = text.split(/(?=^\*\*[^*\n]+\*\*)/m).filter((p) => p.trim());
+  const sections = [];
+
+  for (const part of parts) {
+    const headerMatch = part.match(SECTION_RE);
+    const header  = headerMatch ? headerMatch[1] : null;
+    const content = header ? part.slice(header.length).trim() : part.trim();
+
+    // Si le contenu d'une section dépasse 4000 chars, on le sous-découpe par blocs
+    const full = header ? `${header}\n${content}` : content;
+    if (full.length <= 4000) {
+      sections.push(full);
+    } else {
+      const lines = full.split('\n');
+      let chunk = '';
+      for (const line of lines) {
+        if ((chunk + '\n' + line).length > 4000) {
+          if (chunk) sections.push(chunk.trim());
+          chunk = line;
+        } else {
+          chunk = chunk ? chunk + '\n' + line : line;
+        }
+      }
+      if (chunk) sections.push(chunk.trim());
+    }
   }
-  if (rest) chunks.push(rest);
-  return chunks;
+
+  return sections.length ? sections : [text.slice(0, 4000)];
 }
 
 /** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
@@ -528,19 +551,18 @@ client.on(Events.MessageCreate, async (message) => {
         }).catch(() => {});
       });
 
-      // Découpe le résumé en pages de 4000 caractères (limite Discord par embed)
-      const pages = splitText(summary, 4000);
-      const title = targetUserId ? `🛡️🌸 Résumé des messages de ${targetName ?? 'membre'}` : '🛡️🌸 Résumé de modération';
+      // Un embed par section (👥 Membres / 💬 Sujets / ⚔️ Embrouilles / 🤬 Gros mots)
+      const sections = splitBySection(summary);
+      const baseTitle = targetUserId ? `🛡️🌸 Résumé — ${targetName ?? 'membre'}` : '🛡️🌸 Résumé de modération';
 
-      const embeds = pages.map((page, i) => {
-        const e = new EmbedBuilder().setColor(PINK).setDescription(page);
-        if (i === 0) {
-          e.setTitle(title);
-          if (targetMember) e.setThumbnail(targetMember.user.displayAvatarURL({ size: 256 }));
-        } else {
-          e.setTitle(`${title} (suite ${i + 1}/${pages.length})`);
-        }
-        if (i === pages.length - 1) {
+      const embeds = sections.map((section, i) => {
+        const e = new EmbedBuilder().setColor(PINK).setDescription(section);
+        // Le titre de l'embed reprend le header de la section si dispo, sinon titre général
+        const headerMatch = section.match(/^\*\*([^*\n]+)\*\*/);
+        const sectionTitle = headerMatch ? headerMatch[1].replace(/\*\*/g, '').trim() : baseTitle;
+        e.setTitle(i === 0 && !headerMatch ? baseTitle : sectionTitle);
+        if (i === 0 && targetMember) e.setThumbnail(targetMember.user.displayAvatarURL({ size: 256 }));
+        if (i === sections.length - 1) {
           e.addFields(
             { name: '📊 Messages analysés', value: `\`${messages.length}\``, inline: true },
             { name: '📍 Salon', value: `<#${message.channelId}>`, inline: true },
