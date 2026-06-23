@@ -124,8 +124,11 @@ function pe(description, title) {
 //  RESUME IA (Google Gemini, gratuit) — commande +resume
 // ----------------------------------------------------------------------------
 
-// Modele Gemini gratuit (Google AI Studio). Surchargage possible via .env.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// Modeles Gemini gratuits essayes en cascade (si l'un est en quota 429, on passe au suivant).
+// Surchargage : GEMINI_MODEL=nom_du_modele pour forcer un seul modele.
+const GEMINI_MODELS = process.env.GEMINI_MODEL
+  ? [process.env.GEMINI_MODEL]
+  : ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash'];
 // Active uniquement si une cle est presente
 const geminiReady = !!process.env.GEMINI_API_KEY;
 
@@ -162,25 +165,39 @@ async function summarizeMessages(transcript) {
     "les éventuels conflits, propos problématiques ou signalements potentiels, et " +
     "les membres les plus actifs. Utilise des puces. Sois factuel, n'invente rien.";
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ parts: [{ text: transcript }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
-    }),
+  const body = JSON.stringify({
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ parts: [{ text: transcript }] }],
+    generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
   });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gemini API ${res.status} : ${errText.slice(0, 200)}`);
+  let lastErr = '';
+  for (const model of GEMINI_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
+      return text.trim() || 'Résumé indisponible.';
+    }
+
+    // 429 (quota) / 404 (modele indispo) / 503 (surcharge) -> on tente le modele suivant
+    lastErr = `${res.status} sur ${model}`;
+    if (![429, 404, 503].includes(res.status)) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`Gemini API ${res.status} : ${errText.slice(0, 200)}`);
+    }
   }
 
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
-  return text.trim() || 'Résumé indisponible.';
+  throw new Error(
+    `Tous les modèles Gemini gratuits sont en quota dépassé (dernier: ${lastErr}). ` +
+    `Réessaie dans quelques minutes — le quota gratuit se réinitialise.`,
+  );
 }
 
 /** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
