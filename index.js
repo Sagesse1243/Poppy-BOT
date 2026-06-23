@@ -128,7 +128,7 @@ function pe(description, title) {
 // Surchargage : GEMINI_MODEL=nom_du_modele pour forcer un seul modele.
 const GEMINI_MODELS = process.env.GEMINI_MODEL
   ? [process.env.GEMINI_MODEL]
-  : ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+  : ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 // Active uniquement si une cle est presente
 const geminiReady = !!process.env.GEMINI_API_KEY;
 
@@ -156,7 +156,7 @@ async function fetchMessages(channel, limit) {
  * Demande a Google Gemini un resume de moderation du transcript fourni.
  * Appel REST direct (aucune dependance npm). Renvoie le texte du resume.
  */
-async function summarizeMessages(transcript) {
+async function summarizeMessages(transcript, onWait) {
   const systemInstruction =
     "Tu es un assistant de modération pour un serveur Discord. On te donne une " +
     "transcription de messages récents (format 'Pseudo: message'). Rédige un compte-rendu " +
@@ -181,32 +181,55 @@ async function summarizeMessages(transcript) {
     generationConfig: { temperature: 0.4, maxOutputTokens: 8192 },
   });
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Extrait le delai conseille par Google ("retryDelay": "30s") sinon valeur par defaut
+  const parseRetryDelay = (txt) => {
+    const m = txt.match(/"retryDelay"\s*:\s*"(\d+)s"/);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+
   let lastErr = '';
   for (const model of GEMINI_MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
 
-    if (res.ok) {
-      const data = await res.json();
-      const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
-      return text.trim() || 'Résumé indisponible.';
-    }
+    // Jusqu'a 2 tentatives par modele (la 2e apres le delai conseille en cas de 429)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
 
-    // 429 (quota) / 404 (modele indispo) / 503 (surcharge) -> on tente le modele suivant
-    lastErr = `${res.status} sur ${model}`;
-    if (![429, 404, 503].includes(res.status)) {
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
+        return text.trim() || 'Résumé indisponible.';
+      }
+
       const errText = await res.text().catch(() => '');
+      lastErr = `${res.status} sur ${model}`;
+
+      // 429 = quota/minute -> on attend le delai conseille puis on retente le meme modele
+      if (res.status === 429 && attempt === 0) {
+        let delay = parseRetryDelay(errText);
+        if (delay <= 0) delay = 30;          // defaut si Google ne precise pas
+        delay = Math.min(delay, 60);          // borne a 60s
+        if (onWait) await onWait(delay);      // affiche le compte a rebours cote Discord
+        await sleep(delay * 1000);
+        continue;                             // 2e tentative sur le meme modele
+      }
+
+      // 429 (2e echec) / 404 / 503 -> on passe au modele suivant
+      if ([429, 404, 503].includes(res.status)) break;
+
+      // Autre erreur -> on arrete
       throw new Error(`Gemini API ${res.status} : ${errText.slice(0, 200)}`);
     }
   }
 
   throw new Error(
-    `Tous les modèles Gemini gratuits sont en quota dépassé (dernier: ${lastErr}). ` +
-    `Réessaie dans quelques minutes — le quota gratuit se réinitialise.`,
+    `Tous les modèles Gemini gratuits sont saturés pour le moment (dernier: ${lastErr}). ` +
+    `Réessaie dans 1 minute — le quota gratuit par minute se réinitialise vite.`,
   );
 }
 
@@ -499,7 +522,11 @@ client.on(Events.MessageCreate, async (message) => {
         return status.edit({ embeds: [pe(`ℹ️ ${why}`)] });
       }
 
-      const summary = await summarizeMessages(transcript);
+      const summary = await summarizeMessages(transcript, async (delay) => {
+        await status.edit({
+          embeds: [pe(`⏳ Quota Gemini atteint (limite par minute). Nouvelle tentative dans **${delay}s**… 🌸`)],
+        }).catch(() => {});
+      });
 
       // Découpe le résumé en pages de 4000 caractères (limite Discord par embed)
       const pages = splitText(summary, 4000);
