@@ -30,6 +30,12 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   ChannelSelectMenuBuilder,
+  ContainerBuilder,
+  SectionBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
+  SeparatorSpacingSize,
+  ThumbnailBuilder,
   EmbedBuilder,
   MessageFlags,
 } = require('discord.js');
@@ -272,8 +278,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
       return message.reply('⛔ Cette commande est reservee aux owners.');
     }
-    const { embed, rows } = buildDashboard();
-    return message.reply({ embeds: [embed], components: rows });
+    return message.reply(buildDashboard());
   }
 
   if (command !== 'owner') return;
@@ -383,10 +388,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'dash_streams':       return interaction.showModal(buildStreamsModal());
         case 'dash_welcome_image': return interaction.showModal(buildWelcomeImageModal());
         case 'dash_ping':          return interaction.showModal(buildPingModal());
-        case 'dash_refresh': {
-          const { embed, rows } = buildDashboard();
-          return interaction.update({ embeds: [embed], components: rows });
-        }
+        case 'dash_refresh':
+          return interaction.update(buildDashboard());
       }
     }
 
@@ -483,53 +486,99 @@ async function handleSayModal(interaction) {
 // ============================================================================
 //  3. /dashboard — TABLEAU DE BORD
 // ============================================================================
+// Petite couleur d'accent rose pour le panneau
+const DASH_ACCENT = 0xF74FB0;
+
+/**
+ * Construit le panneau de configuration avec Components V2 :
+ * chaque categorie a son bouton "Configurer" aligne a droite (style screenshot).
+ */
 function buildDashboard() {
   const config = getConfig();
-  const fmtChannel = (id) => (id ? `<#${id}> (\`${id}\`)` : '`non configure`');
-  const fmtText    = (v)  => (v  ? `\`${v}\``            : '`non configure`');
+  const fmtChannel = (id) => (id ? `<#${id}>` : '`non configuré`');
+  const fmtText    = (v)  => (v  ? `\`${v}\`` : '`non configuré`');
 
   const fmtPing = (cfg) => {
-    if (cfg.livePingType === 'here')                          return '`@here`';
-    if (cfg.livePingType === 'role' && cfg.livePingRoleId)   return `<@&${cfg.livePingRoleId}> (role)`;
-    if (cfg.livePingType === 'aucun')                         return '`Aucun ping`';
+    if (cfg.livePingType === 'here')                        return '`@here`';
+    if (cfg.livePingType === 'role' && cfg.livePingRoleId) return `<@&${cfg.livePingRoleId}>`;
+    if (cfg.livePingType === 'aucun')                      return '`Aucun ping`';
     return '`@everyone`';
   };
 
-  const embed = new EmbedBuilder()
-    .setColor(PINK)
-    .setTitle('🌸 Tableau de bord — Poppy Bot')
-    .setDescription(
-      '> Bienvenue dans le panneau de configuration.\n> Utilise les boutons ci-dessous pour modifier les parametres.',
-    )
-    .addFields(
-      { name: '─────────────────────', value: '**📡  Alertes Live**', inline: false },
-      { name: '📌 Salon des alertes',  value: fmtChannel(config.alertChannelId), inline: true },
-      { name: '🔔 Ping',              value: fmtPing(config),                    inline: true },
-      { name: '─────────────────────', value: '**🎥  Streams suivis**', inline: false },
-      { name: '💜 Twitch',            value: fmtText(config.twitchUsername),      inline: true },
-      { name: '🎵 TikTok',            value: fmtText(config.tiktokUsername),      inline: true },
-      { name: '─────────────────────', value: '**👋  Bienvenue**', inline: false },
-      { name: '💬 Salon',             value: fmtChannel(config.welcomeChannelId), inline: true },
-      {
-        name: '🖼️ Image de fond',
-        value: config.welcomeImageUrl ? `[Voir l'image](${config.welcomeImageUrl})` : '`non configuree`',
-        inline: true,
-      },
-    )
-    .setFooter({ text: 'Poppy Bot  •  Configuration' })
-    .setTimestamp();
+  // Helper : un separateur fin
+  const sep = () => new SeparatorBuilder().setDivider(true).setSpacing(SeparatorSpacingSize.Small);
 
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('dash_channels').setLabel('Salons').setEmoji('📌').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('dash_streams').setLabel('Twitch / TikTok').setEmoji('🎥').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('dash_ping').setLabel('Ping Lives').setEmoji('🔔').setStyle(ButtonStyle.Primary),
-  );
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('dash_welcome_image').setLabel('Image Bienvenue').setEmoji('🖼️').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('dash_refresh').setLabel('Rafraichir').setEmoji('🔄').setStyle(ButtonStyle.Success),
-  );
+  // Helper : une section "categorie" avec bouton Configurer a droite
+  const section = (emoji, titre, description, customId) =>
+    new SectionBuilder()
+      .addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(`### ${emoji} ${titre}\n${description}`),
+      )
+      .setButtonAccessory(
+        new ButtonBuilder()
+          .setCustomId(customId)
+          .setLabel('Configurer')
+          .setEmoji('🌸')
+          .setStyle(ButtonStyle.Secondary),
+      );
 
-  return { embed, rows: [row1, row2] };
+  // En-tete avec avatar du bot a droite (comme le screenshot)
+  const header = new SectionBuilder()
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(
+        '# 🌸✨ Configuration de Poppy Bot ✨🌸\n' +
+        '**Bienvenue dans la configuration de Poppy Bot !** 🩷\n' +
+        'Sélectionne une catégorie pour configurer les fonctionnalités du bot. 💗',
+      ),
+    )
+    .setThumbnailAccessory(
+      new ThumbnailBuilder().setURL(client.user.displayAvatarURL({ size: 256 })),
+    );
+
+  const container = new ContainerBuilder()
+    .setAccentColor(DASH_ACCENT)
+    .addSectionComponents(header)
+    .addSeparatorComponents(sep())
+    .addSectionComponents(
+      section('📡🎀', 'Salon des alertes',
+        `Configuration du salon où les alertes live sont envoyées.\n> 🩷 **Actuel :** ${fmtChannel(config.alertChannelId)}`,
+        'dash_channels'),
+    )
+    .addSeparatorComponents(sep())
+    .addSectionComponents(
+      section('🎥💗', 'Streams Twitch & TikTok',
+        `Configuration des comptes à surveiller pour les lives.\n> 💜 **Twitch :** ${fmtText(config.twitchUsername)}\n> 🎵 **TikTok :** ${fmtText(config.tiktokUsername)}`,
+        'dash_streams'),
+    )
+    .addSeparatorComponents(sep())
+    .addSectionComponents(
+      section('🔔🌺', 'Ping des lives',
+        `Configuration du type de ping lors d'une alerte live.\n> 🌷 **Actuel :** ${fmtPing(config)}`,
+        'dash_ping'),
+    )
+    .addSeparatorComponents(sep())
+    .addSectionComponents(
+      section('👋🎀', 'Salon de bienvenue',
+        `Configuration du salon d'accueil des nouveaux membres.\n> 💖 **Salon :** ${fmtChannel(config.welcomeChannelId)}`,
+        'dash_channels'),
+    )
+    .addSeparatorComponents(sep())
+    .addSectionComponents(
+      section('🖼️🌸', 'Image de bienvenue',
+        `Configuration de l'image de fond du message de bienvenue.\n> 🦩 **Image :** ${config.welcomeImageUrl ? `[Voir l'image](${config.welcomeImageUrl})` : '`non configurée`'}`,
+        'dash_welcome_image'),
+    )
+    .addSeparatorComponents(sep())
+    .addActionRowComponents(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('dash_refresh').setLabel('Rafraîchir').setEmoji('🔄').setStyle(ButtonStyle.Primary),
+      ),
+    )
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent('-# 🌸 Poppy Bot • Panneau de configuration'),
+    );
+
+  return { components: [container], flags: MessageFlags.IsComponentsV2 };
 }
 
 // --- Modal : salons ---
