@@ -1,0 +1,22 @@
+{
+  "name": "poppy-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord : co-proprietaires, /say, dashboard, alertes live Twitch/TikTok et systeme de bienvenue.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "tiktok-live-connector": "^1.1.9"
+  }
+}
