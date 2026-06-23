@@ -39,6 +39,7 @@ const {
   EmbedBuilder,
   MessageFlags,
 } = require('discord.js');
+const Anthropic = require('@anthropic-ai/sdk');
 
 // ----------------------------------------------------------------------------
 //  CONSTANTES / FICHIERS
@@ -83,6 +84,7 @@ function getConfig() {
     livePingType: 'everyone',  // everyone | here | role | aucun
     livePingRoleId: '',        // ID du role si livePingType = 'role'
     liveAlertImageUrl: '',     // Image affichee dans les embeds d'alerte live
+    modChannelId: '',          // Salon modo ou sont envoyes les resumes
   });
 }
 function setConfig(patch) {
@@ -117,6 +119,54 @@ function pe(description, title) {
   const e = new EmbedBuilder().setColor(PINK).setDescription(description);
   if (title) e.setTitle(title);
   return e;
+}
+
+// ----------------------------------------------------------------------------
+//  RESUME IA (Claude Haiku) — commande +resume
+// ----------------------------------------------------------------------------
+
+// Client Anthropic (lit ANTHROPIC_API_KEY depuis l'environnement). null si absent.
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
+
+/**
+ * Recupere les `limit` derniers messages d'un salon (pagination par lots de 100).
+ * Renvoie un tableau du plus ancien au plus recent.
+ */
+async function fetchMessages(channel, limit) {
+  const collected = [];
+  let before;
+  while (collected.length < limit) {
+    const batchSize = Math.min(100, limit - collected.length);
+    const batch = await channel.messages.fetch({ limit: batchSize, before });
+    if (batch.size === 0) break;
+    const arr = [...batch.values()];
+    collected.push(...arr);
+    before = arr[arr.length - 1].id;
+    if (batch.size < batchSize) break;
+  }
+  // Discord renvoie du plus recent au plus ancien -> on remet en ordre chronologique
+  return collected.reverse();
+}
+
+/**
+ * Demande a Claude Haiku un resume de moderation du transcript fourni.
+ * Renvoie le texte du resume.
+ */
+async function summarizeMessages(transcript) {
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 1024,
+    system:
+      "Tu es un assistant de modération pour un serveur Discord. On te donne une " +
+      "transcription de messages récents (format 'Pseudo: message'). Rédige un " +
+      "résumé clair et concis EN FRANÇAIS destiné à l'équipe de modération. Couvre : " +
+      "les principaux sujets discutés, l'ambiance générale (calme/tendue/animée), " +
+      "les éventuels conflits, propos problématiques ou signalements potentiels, et " +
+      "les membres les plus actifs. Utilise des puces. Sois factuel, ne invente rien.",
+    messages: [{ role: 'user', content: transcript }],
+  });
+  const textBlock = response.content.find((b) => b.type === 'text');
+  return textBlock ? textBlock.text : 'Résumé indisponible.';
 }
 
 /** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
@@ -320,6 +370,11 @@ client.on(Events.MessageCreate, async (message) => {
           inline: false,
         },
         {
+          name: '🛡️🌸 Modération',
+          value: `\`${PREFIX}resume 50\` (ou 100 / 500) — Résumé IA des derniers messages, envoyé au salon modo`,
+          inline: false,
+        },
+        {
           name: '🛠️🩷 Utilitaire',
           value: `\`${PREFIX}tools\` — Afficher ce menu`,
           inline: false,
@@ -328,6 +383,67 @@ client.on(Events.MessageCreate, async (message) => {
       .setFooter({ text: '🌸 Poppy Bot • Liste des commandes' })
       .setTimestamp();
     return message.reply({ embeds: [embed] });
+  }
+
+  // ---- +resume <50|100|500> : resume IA des derniers messages ----
+  if (command === 'resume' || command === 'résumé' || command === 'summary') {
+    if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
+    }
+    if (!anthropic) {
+      return message.reply({ embeds: [pe('❌ Le résumé IA est désactivé : `ANTHROPIC_API_KEY` manquante dans le `.env`.')] });
+    }
+
+    // Nombre de messages : 50 par defaut, max 500
+    const ALLOWED = [50, 100, 500];
+    let count = parseInt(args[0], 10);
+    if (!ALLOWED.includes(count)) count = 50;
+
+    const status = await message.reply({ embeds: [pe(`🧠 Lecture des **${count}** derniers messages et génération du résumé… 🌸`)] });
+
+    try {
+      const messages = await fetchMessages(message.channel, count);
+      // Ne garde que les messages texte non-bots, format "Pseudo: contenu"
+      const transcript = messages
+        .filter((m) => !m.author.bot && m.content && m.content.trim().length > 0)
+        .map((m) => `${m.author.username}: ${m.content.replace(/\n+/g, ' ').slice(0, 500)}`)
+        .join('\n');
+
+      if (!transcript) {
+        return status.edit({ embeds: [pe('ℹ️ Aucun message texte exploitable trouvé.')] });
+      }
+
+      const summary = await summarizeMessages(transcript);
+
+      const embed = new EmbedBuilder()
+        .setColor(PINK)
+        .setTitle('🛡️🌸 Résumé de modération')
+        .setDescription(summary.slice(0, 4096))
+        .addFields(
+          { name: '📊 Messages analysés', value: `\`${count}\``, inline: true },
+          { name: '📍 Salon', value: `<#${message.channelId}>`, inline: true },
+          { name: '👤 Demandé par', value: message.author.toString(), inline: true },
+        )
+        .setFooter({ text: '🌸 Poppy Bot • Résumé généré par Claude' })
+        .setTimestamp();
+
+      // Envoi dans le salon modo si configuré, sinon dans le salon courant
+      const { modChannelId } = getConfig();
+      let modChannel = null;
+      if (modChannelId) {
+        try { modChannel = await client.channels.fetch(modChannelId); } catch {}
+      }
+
+      if (modChannel && modChannel.isTextBased()) {
+        await modChannel.send({ embeds: [embed] });
+        return status.edit({ embeds: [pe(`✅ Résumé des **${count}** derniers messages envoyé dans <#${modChannel.id}>. 🌸`)] });
+      }
+      // Pas de salon modo configuré -> on poste ici
+      return status.edit({ embeds: [embed] });
+    } catch (err) {
+      console.error('[RESUME] Erreur :', err);
+      return status.edit({ embeds: [pe(`❌ Erreur lors de la génération du résumé : ${err.message ?? err}`)] });
+    }
   }
 
   // ---- +dashboard : affiche le panneau de config ----
@@ -627,8 +743,8 @@ function buildDashboard() {
     )
     .addSeparatorComponents(sep())
     .addSectionComponents(
-      section('👋🎀', 'Salon de bienvenue',
-        `Configuration du salon d'accueil des nouveaux membres.\n> 💖 **Salon :** ${fmtChannel(config.welcomeChannelId)}`,
+      section('👋🎀', 'Salon de bienvenue & modo',
+        `Salon d'accueil des nouveaux membres + salon modo des résumés.\n> 💖 **Bienvenue :** ${fmtChannel(config.welcomeChannelId)}\n> 🛡️ **Modo :** ${fmtChannel(config.modChannelId)}`,
         'dash_welcome_channel'),
     )
     .addSeparatorComponents(sep())
@@ -676,6 +792,7 @@ function buildDashboardLegacy() {
       { name: '💜 Twitch',              value: fmtText(config.twitchUsername),     inline: true },
       { name: '🎵 TikTok',              value: fmtText(config.tiktokUsername),     inline: true },
       { name: '👋🎀 Salon de bienvenue', value: fmtChannel(config.welcomeChannelId), inline: true },
+      { name: '🛡️🌸 Salon modo',        value: fmtChannel(config.modChannelId),    inline: true },
       { name: '🖼️🌸 Image de fond',     value: config.welcomeImageUrl ? `[Voir](${config.welcomeImageUrl})` : '`non configurée`', inline: true },
     )
     .setFooter({ text: '🌸 Poppy Bot • Panneau de configuration' })
@@ -711,18 +828,24 @@ function buildChannelsModal() {
           .setStyle(TextInputStyle.Short).setPlaceholder('123456789012345678')
           .setValue(config.welcomeChannelId || '').setRequired(false),
       ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('modChannelId').setLabel('ID du salon modo (résumés +resume)')
+          .setStyle(TextInputStyle.Short).setPlaceholder('123456789012345678')
+          .setValue(config.modChannelId || '').setRequired(false),
+      ),
     );
 }
 
 async function handleChannelsModal(interaction) {
   const alertChannelId   = interaction.fields.getTextInputValue('alertChannelId').trim();
   const welcomeChannelId = interaction.fields.getTextInputValue('welcomeChannelId').trim();
+  const modChannelId     = interaction.fields.getTextInputValue('modChannelId').trim();
 
   const idOk = (id) => id === '' || /^\d{17,20}$/.test(id);
-  if (!idOk(alertChannelId) || !idOk(welcomeChannelId)) {
+  if (!idOk(alertChannelId) || !idOk(welcomeChannelId) || !idOk(modChannelId)) {
     return interaction.reply({ embeds: [pe('❌ ID invalide (17 à 20 chiffres attendus).')], flags: MessageFlags.Ephemeral });
   }
-  setConfig({ alertChannelId, welcomeChannelId });
+  setConfig({ alertChannelId, welcomeChannelId, modChannelId });
   return interaction.reply({ embeds: [pe('✅ Salons mis à jour. 🌸')], flags: MessageFlags.Ephemeral });
 }
 
