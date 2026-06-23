@@ -21,6 +21,7 @@ const {
   GatewayIntentBits,
   Partials,
   Events,
+  ChannelType,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -28,6 +29,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
+  ChannelSelectMenuBuilder,
   EmbedBuilder,
   MessageFlags,
 } = require('discord.js');
@@ -211,25 +213,18 @@ client.on(Events.MessageCreate, async (message) => {
   const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
   const command = (args.shift() || '').toLowerCase();
 
-  // ---- +say [#salon ou ID] ----
-  // Les modals ne peuvent s'ouvrir qu'en reponse a une interaction (bouton).
-  // On envoie donc un menu de font + bouton; le modal s'ouvre au clic.
+  // ---- +say ----
   if (command === 'say') {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
       return message.reply('⛔ Cette commande est reservee aux owners.');
     }
 
-    // Parsing du salon cible optionnel : +say #salon  ou  +say 123456789
-    let channelId = null;
-    if (args[0]) {
-      const m = args[0].match(/^(?:<#)?(\d{17,20})>?$/);
-      if (m) channelId = m[1];
-    }
-
-    // Stocke l'etat pour cet utilisateur
-    sayState.set(message.author.id, { channelId, font: 'normal' });
-
-    const channelInfo = channelId ? ` dans <#${channelId}>` : ' dans ce salon';
+    const channelRow = new ActionRowBuilder().addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId('say_channel_select')
+        .setPlaceholder('📌 Choisir le salon de publication...')
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+    );
 
     const fontRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
@@ -254,17 +249,15 @@ client.on(Events.MessageCreate, async (message) => {
         .setStyle(ButtonStyle.Primary),
     );
 
-    // Supprime la commande +say pour ne pas la laisser visible
     message.delete().catch(() => {});
 
-    // Envoie le selecteur et stocke la reference pour le supprimer apres publication
     const prompt = await message.channel.send({
-      content: `📢 Publication d'un embed**${channelInfo}**\n🔤 **Police du titre :** Normal — change-la ci-dessous puis clique sur le bouton.`,
-      components: [fontRow, buttonRow],
+      content: `📢 **Publication d'un embed**\n📌 **Salon :** <#${message.channelId}> *(change ci-dessous)*\n🔤 **Police :** Normal`,
+      components: [channelRow, fontRow, buttonRow],
     });
 
     sayState.set(message.author.id, {
-      channelId,
+      channelId: message.channelId,
       font: 'normal',
       promptId: prompt.id,
       promptChannelId: prompt.channelId,
@@ -346,6 +339,21 @@ client.on(Events.MessageCreate, async (message) => {
 // ============================================================================
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    // ---- Selecteur de salon natif (flux +say) ----
+    if (interaction.isChannelSelectMenu() && interaction.customId === 'say_channel_select') {
+      if (!isOwnerOrCoOwner(interaction.guild, interaction.user.id)) {
+        return interaction.reply({ content: '⛔ Action reservee aux owners.', flags: MessageFlags.Ephemeral });
+      }
+      const state = sayState.get(interaction.user.id) ?? { channelId: interaction.channelId, font: 'normal' };
+      state.channelId = interaction.values[0];
+      sayState.set(interaction.user.id, state);
+
+      const font = FONT_LABELS[state.font] ?? 'Normal';
+      return interaction.update({
+        content: `📢 **Publication d'un embed**\n📌 **Salon :** <#${state.channelId}>\n🔤 **Police :** ${font}`,
+      });
+    }
+
     // ---- Menu de selection de la police (flux +say) ----
     if (interaction.isStringSelectMenu() && interaction.customId === 'say_font_select') {
       if (!isOwnerOrCoOwner(interaction.guild, interaction.user.id)) {
@@ -355,9 +363,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       state.font = interaction.values[0];
       sayState.set(interaction.user.id, state);
 
-      const channelInfo = state.channelId ? ` dans <#${state.channelId}>` : ' dans ce salon';
       return interaction.update({
-        content: `📢 Publication d'un embed**${channelInfo}**\n🔤 **Police du titre :** ${FONT_LABELS[state.font]} — clique sur le bouton pour composer l'embed.`,
+        content: `📢 **Publication d'un embed**\n📌 **Salon :** <#${state.channelId ?? interaction.channelId}>\n🔤 **Police :** ${FONT_LABELS[state.font] ?? 'Normal'}`,
       });
     }
 
