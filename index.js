@@ -178,7 +178,7 @@ async function summarizeMessages(transcript) {
   const body = JSON.stringify({
     system_instruction: { parts: [{ text: systemInstruction }] },
     contents: [{ parts: [{ text: transcript }] }],
-    generationConfig: { temperature: 0.4, maxOutputTokens: 2048 },
+    generationConfig: { temperature: 0.4, maxOutputTokens: 8192 },
   });
 
   let lastErr = '';
@@ -208,6 +208,24 @@ async function summarizeMessages(transcript) {
     `Tous les modèles Gemini gratuits sont en quota dépassé (dernier: ${lastErr}). ` +
     `Réessaie dans quelques minutes — le quota gratuit se réinitialise.`,
   );
+}
+
+/**
+ * Découpe un long texte en morceaux <= maxLen, en coupant de préférence sur
+ * les sauts de ligne (puis sur les espaces) pour ne pas casser un mot.
+ */
+function splitText(text, maxLen = 4000) {
+  const chunks = [];
+  let rest = text;
+  while (rest.length > maxLen) {
+    let cut = rest.lastIndexOf('\n', maxLen);
+    if (cut < maxLen * 0.5) cut = rest.lastIndexOf(' ', maxLen);
+    if (cut < maxLen * 0.5) cut = maxLen;
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
 }
 
 /** Embed rose du panneau de publication +say (reutilise pour les mises a jour). */
@@ -483,18 +501,27 @@ client.on(Events.MessageCreate, async (message) => {
 
       const summary = await summarizeMessages(transcript);
 
-      const embed = new EmbedBuilder()
-        .setColor(PINK)
-        .setTitle(targetUserId ? `🛡️🌸 Résumé des messages de ${targetName ?? 'membre'}` : '🛡️🌸 Résumé de modération')
-        .setDescription(summary.slice(0, 4096))
-        .addFields(
-          { name: '📊 Messages analysés', value: `\`${messages.length}\``, inline: true },
-          { name: '📍 Salon', value: `<#${message.channelId}>`, inline: true },
-          { name: '👤 Demandé par', value: message.author.toString(), inline: true },
-        )
-        .setFooter({ text: '🌸 Poppy Bot • Résumé généré par Gemini' })
-        .setTimestamp();
-      if (targetMember) embed.setThumbnail(targetMember.user.displayAvatarURL({ size: 256 }));
+      // Découpe le résumé en pages de 4000 caractères (limite Discord par embed)
+      const pages = splitText(summary, 4000);
+      const title = targetUserId ? `🛡️🌸 Résumé des messages de ${targetName ?? 'membre'}` : '🛡️🌸 Résumé de modération';
+
+      const embeds = pages.map((page, i) => {
+        const e = new EmbedBuilder().setColor(PINK).setDescription(page);
+        if (i === 0) {
+          e.setTitle(title);
+          if (targetMember) e.setThumbnail(targetMember.user.displayAvatarURL({ size: 256 }));
+        } else {
+          e.setTitle(`${title} (suite ${i + 1}/${pages.length})`);
+        }
+        if (i === pages.length - 1) {
+          e.addFields(
+            { name: '📊 Messages analysés', value: `\`${messages.length}\``, inline: true },
+            { name: '📍 Salon', value: `<#${message.channelId}>`, inline: true },
+            { name: '👤 Demandé par', value: message.author.toString(), inline: true },
+          ).setFooter({ text: '🌸 Poppy Bot • Résumé généré par Gemini' }).setTimestamp();
+        }
+        return e;
+      });
 
       // Envoi dans le salon modo si configuré, sinon dans le salon courant
       const { modChannelId } = getConfig();
@@ -503,15 +530,21 @@ client.on(Events.MessageCreate, async (message) => {
         try { modChannel = await client.channels.fetch(modChannelId); } catch {}
       }
 
-      if (modChannel && modChannel.isTextBased()) {
-        await modChannel.send({ embeds: [embed] });
+      const destination = (modChannel && modChannel.isTextBased()) ? modChannel : null;
+
+      if (destination) {
+        // Un message par page pour ne pas dépasser la limite globale Discord
+        for (const e of embeds) await destination.send({ embeds: [e] });
         // Supprime les 2 messages (commande + statut) une fois le résumé envoyé
         await status.delete().catch(() => {});
         await message.delete().catch(() => {});
         return;
       }
-      // Pas de salon modo configuré -> on poste le résumé ici
-      return status.edit({ embeds: [embed] });
+
+      // Pas de salon modo configuré -> on poste ici (1re page édite le statut, le reste en nouveaux messages)
+      await status.edit({ embeds: [embeds[0]] });
+      for (let i = 1; i < embeds.length; i++) await message.channel.send({ embeds: [embeds[i]] });
+      return;
     } catch (err) {
       console.error('[RESUME] Erreur :', err);
       return status.edit({ embeds: [pe(`❌ Erreur lors de la génération du résumé : ${err.message ?? err}`)] });
