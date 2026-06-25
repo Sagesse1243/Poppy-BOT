@@ -576,6 +576,50 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
+  // ---- +pp [url] (ou image jointe) : change la photo de profil du bot ----
+  if (command === 'pp' || command === 'avatar' || command === 'photo') {
+    if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
+    }
+
+    // Source de l'image : pièce jointe en priorité, sinon URL en argument
+    let imageUrl = null;
+    const attach = message.attachments.first();
+    if (attach) imageUrl = attach.url;
+    else if (args[0] && isValidUrl(args[0])) imageUrl = args[0];
+
+    if (!imageUrl) {
+      return message.reply({
+        embeds: [pe(
+          `❌ Donne une image : \`${PREFIX}pp <url>\` ou joins une image au message.\n` +
+          `> Formats : PNG, JPG, GIF · Discord limite à ~2 changements/heure.`,
+        )],
+      });
+    }
+
+    const status = await message.reply({ embeds: [pe('🖼️ Changement de la photo de profil… 🌸')] });
+    try {
+      const res = await fetch(imageUrl);
+      if (!res.ok) throw new Error('Image inaccessible (URL invalide ?).');
+      const buffer = Buffer.from(await res.arrayBuffer());
+      await client.user.setAvatar(buffer);
+
+      const ok = new EmbedBuilder()
+        .setColor(PINK)
+        .setTitle('✅🌸 Photo de profil mise à jour !')
+        .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
+        .setFooter({ text: '🌸 Poppy Bot' })
+        .setTimestamp();
+      return status.edit({ embeds: [ok] });
+    } catch (err) {
+      console.error('[PP] Erreur :', err);
+      const reason = /rate/i.test(err.message ?? '')
+        ? 'Trop de changements récents — Discord limite à ~2/heure. Réessaie plus tard.'
+        : (err.message ?? String(err));
+      return status.edit({ embeds: [pe(`❌ Échec du changement de photo : ${reason}`)] });
+    }
+  }
+
   // ---- +tools : liste toutes les commandes ----
   if (command === 'tools' || command === 'help' || command === 'commands') {
     const embed = new EmbedBuilder()
@@ -619,7 +663,9 @@ client.on(Events.MessageCreate, async (message) => {
         },
         {
           name: '🛠️🩷 Utilitaire',
-          value: `\`${PREFIX}tools\` — Afficher ce menu`,
+          value:
+            `\`${PREFIX}pp <url>\` (ou image jointe) — Changer la photo de profil du bot\n` +
+            `\`${PREFIX}tools\` — Afficher ce menu`,
           inline: false,
         },
       )
