@@ -17,6 +17,7 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { WebcastPushConnection } = require('tiktok-live-connector');
+const { Pool } = require('pg');
 const {
   Client,
   GatewayIntentBits,
@@ -139,14 +140,55 @@ const PINK_DOTS = ['🩷', '💗', '💖', '💓', '💕'];
 // Caractères de hauteur croissante pour le mini graphe vertical
 const BAR_BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-// { userId: xp } — chargé depuis levels.json
-let levelsData = readJSON(LEVELS_FILE, {});
-let levelsDirty = false;
+// { userId: xp } — en mémoire (source : Postgres si DATABASE_URL, sinon levels.json)
+let levelsData = {};
+const dirtyIds = new Set();          // userId modifiés à sauvegarder
+const useDB = !!process.env.DATABASE_URL;
+let pool = null;
 
-function saveLevelsNow() {
-  if (!levelsDirty) return;
-  writeJSON(LEVELS_FILE, levelsData);
-  levelsDirty = false;
+/** SSL requis seulement pour les connexions Postgres publiques (pas le réseau interne Railway). */
+function pgSsl(url) {
+  try {
+    const h = new URL(url).hostname;
+    if (h === 'localhost' || h === '127.0.0.1' || h.endsWith('.railway.internal')) return false;
+  } catch {}
+  return { rejectUnauthorized: false };
+}
+
+/** Initialise le stockage des niveaux (Postgres ou fichier JSON). */
+async function initLevelsStore() {
+  if (useDB) {
+    pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: pgSsl(process.env.DATABASE_URL) });
+    await pool.query('CREATE TABLE IF NOT EXISTS levels (user_id TEXT PRIMARY KEY, xp BIGINT NOT NULL DEFAULT 0)');
+    const res = await pool.query('SELECT user_id, xp FROM levels');
+    for (const row of res.rows) levelsData[row.user_id] = Number(row.xp);
+    console.log(`[NIVEAU] Postgres connecté — ${res.rows.length} membres chargés.`);
+  } else {
+    levelsData = readJSON(LEVELS_FILE, {});
+    console.log('[NIVEAU] Pas de DATABASE_URL — stockage fichier levels.json (réinitialisé à chaque redéploiement).');
+  }
+}
+
+/** Sauvegarde les XP modifiées (UPSERT en DB, ou écriture du fichier JSON). */
+async function saveLevelsNow() {
+  if (dirtyIds.size === 0) return;
+  const ids = [...dirtyIds];
+  dirtyIds.clear();
+  if (useDB && pool) {
+    try {
+      for (const id of ids) {
+        await pool.query(
+          'INSERT INTO levels (user_id, xp) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET xp = EXCLUDED.xp',
+          [id, levelsData[id] || 0],
+        );
+      }
+    } catch (e) {
+      console.error('[NIVEAU] Erreur sauvegarde DB :', e.message);
+      ids.forEach((id) => dirtyIds.add(id)); // on réessaiera au prochain flush
+    }
+  } else {
+    writeJSON(LEVELS_FILE, levelsData);
+  }
 }
 
 /** XP cumulée nécessaire pour ATTEINDRE un niveau donné (courbe exponentielle). */
@@ -169,7 +211,7 @@ function levelFromXp(xp) {
 function addXp(userId, amount) {
   const before = levelFromXp(levelsData[userId] || 0);
   levelsData[userId] = (levelsData[userId] || 0) + amount;
-  levelsDirty = true;
+  dirtyIds.add(userId);
   const after = levelFromXp(levelsData[userId]);
   return after > before ? after : null;
 }
@@ -694,7 +736,7 @@ client.on(Events.MessageCreate, async (message) => {
     return message.reply({ embeds: [embed] });
   }
 
-  // ---- +top : classement (top 10) avec graphe vertical ----
+  // ---- +top : classement (top 10) avec avatars, couronnes et graphe vertical ----
   if (command === 'top' || command === 'classement' || command === 'leaderboard') {
     const sorted = Object.entries(levelsData)
       .filter(([, xp]) => xp > 0)
@@ -707,36 +749,58 @@ client.on(Events.MessageCreate, async (message) => {
 
     const maxXp = sorted[0][1];
 
-    // Mini graphe vertical (skyline) : une colonne par membre, hauteur ∝ XP
+    // Couronnes Or / Argent / Bronze rose pour le top 3
+    const crownFor = (rank) => {
+      if (rank === 1) return { icon: '👑', tag: 'Or rose',      color: 0xFF4FA3 };
+      if (rank === 2) return { icon: '👑', tag: 'Argent rose',  color: 0xFFA6D0 };
+      if (rank === 3) return { icon: '👑', tag: 'Bronze rose',  color: 0xC97BA0 };
+      return { icon: PINK_DOTS[rank % PINK_DOTS.length], tag: `#${rank}`, color: PINKS[rank % PINKS.length] };
+    };
+
+    // Mini graphe vertical (skyline), du plus petit (gauche) au plus grand (droite)
     const skyline = sorted
       .map(([, xp]) => BAR_BLOCKS[Math.min(BAR_BLOCKS.length - 1, Math.round((xp / maxXp) * (BAR_BLOCKS.length - 1)))])
-      .reverse() // du plus petit (gauche) au plus grand (droite)
+      .reverse()
       .join(' ');
 
-    // Résolution des pseudos
-    const lines = [];
-    for (let i = sorted.length - 1; i >= 0; i--) { // du plus petit au plus grand
-      const [id, xp] = sorted[i];
-      const lvl = levelFromXp(xp);
-      const member = await message.guild.members.fetch(id).catch(() => null);
-      const name = member ? member.user.username : `Inconnu (${id})`;
-      const rank = i + 1;
-      const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `\`#${rank}\``;
-      const barLen = Math.max(1, Math.round((xp / maxXp) * 12));
-      const bar = '│'.repeat(barLen); // lignes verticales proportionnelles
-      lines.push(`${medal} ${PINK_DOTS[lvl % PINK_DOTS.length]} **${name}** — Niv. ${lvl} · ${xp} XP\n\`${bar}\``);
-    }
-
-    const embed = new EmbedBuilder()
+    // En-tête du classement
+    const header = new EmbedBuilder()
       .setColor(PINK)
       .setTitle('🏆🌸 Classement — Top 10')
       .setDescription(
         `📈 **Activité** (du plus petit au plus grand)\n\`${skyline}\`\n\n` +
-        lines.join('\n'),
+        `👑 **Or rose** · 👑 **Argent rose** · 👑 **Bronze rose** pour le podium !`,
       )
       .setFooter({ text: '🌸 Poppy Bot • +niv pour ton niveau détaillé' })
       .setTimestamp();
-    return message.reply({ embeds: [embed] });
+
+    // Une carte par membre avec sa photo de profil — ordonné du plus petit au plus grand
+    const cards = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const [id, xp] = sorted[i];
+      const lvl = levelFromXp(xp);
+      const rank = i + 1;
+      const member = await message.guild.members.fetch(id).catch(() => null);
+      const user = member ? member.user : null;
+      const name = user ? user.username : `Inconnu (${id})`;
+      const { icon, tag, color } = crownFor(rank);
+      const barLen = Math.max(1, Math.round((xp / maxXp) * 14));
+      const bar = '│'.repeat(barLen); // lignes verticales proportionnelles
+
+      const card = new EmbedBuilder()
+        .setColor(color)
+        .setAuthor({
+          name: `${icon} ${tag} — ${name}`,
+          iconURL: user ? user.displayAvatarURL({ size: 64 }) : undefined,
+        })
+        .setThumbnail(user ? user.displayAvatarURL({ size: 128 }) : null)
+        .setDescription(`🏆 **Niveau ${lvl}** · ✨ ${xp} XP\n\`${bar}\``);
+      cards.push(card);
+    }
+
+    // En-tête puis les 10 cartes (max 10 embeds par message)
+    await message.reply({ embeds: [header] });
+    return message.channel.send({ embeds: cards });
   }
 
   // ---- +pp [url] (ou image jointe) : change la photo de profil du bot ----
@@ -1792,6 +1856,9 @@ client.once(Events.ClientReady, async (c) => {
 
   const config = getConfig();
 
+  // Niveaux : initialise le stockage (Postgres ou JSON) avant tout
+  await initLevelsStore().catch((e) => console.error('[NIVEAU] Init échouée :', e.message));
+
   // Twitch : verification immediate, puis toutes les 5 minutes
   checkLives().catch((e) => console.error(e));
   setInterval(() => checkLives().catch((e) => console.error(e)), LIVE_CHECK_INTERVAL);
@@ -1815,12 +1882,16 @@ client.once(Events.ClientReady, async (c) => {
   }, VOICE_TICK_MS);
 
   // Sauvegarde de l'XP toutes les 15s (si modifié)
-  setInterval(saveLevelsNow, 15000);
+  setInterval(() => { saveLevelsNow().catch((e) => console.error('[NIVEAU] Flush :', e.message)); }, 15000);
 });
 
 // Sauvegarde finale propre à l'arrêt
-process.on('SIGINT',  () => { saveLevelsNow(); process.exit(0); });
-process.on('SIGTERM', () => { saveLevelsNow(); process.exit(0); });
+async function gracefulExit() {
+  try { await saveLevelsNow(); } catch {}
+  process.exit(0);
+}
+process.on('SIGINT',  gracefulExit);
+process.on('SIGTERM', gracefulExit);
 
 if (!process.env.DISCORD_TOKEN) {
   console.error('[FATAL] DISCORD_TOKEN est requis dans le fichier .env');
