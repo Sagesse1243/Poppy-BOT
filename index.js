@@ -139,6 +139,29 @@ const PINKS = [0xFF1493, 0xFF4FA3, 0xFF77B5, 0xFF9ECF, 0xFFC0DD];
 const PINK_DOTS = ['🩷', '💗', '💖', '💓', '💕'];
 // Caractères de hauteur croissante pour le mini graphe vertical
 const BAR_BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+// Carrés de couleur pour le graphe vertical (rotation à chaque +top)
+const COLOR_SQUARES = ['🟥', '🟧', '🟨', '🟩', '🟦', '🟪'];
+let topColorOffset = 0; // décalage de couleur, incrémenté à chaque +top
+
+/**
+ * Construit un graphe en barres verticales colorées (style histogramme).
+ * `values` = XP ordonnés du plus petit (gauche) au plus grand (droite).
+ */
+function buildVerticalChart(values, offset) {
+  const maxRows = 8;
+  const max = Math.max(...values, 1);
+  const heights = values.map((v) => Math.max(1, Math.round((v / max) * maxRows)));
+  const colors = values.map((_, c) => COLOR_SQUARES[(c + offset) % COLOR_SQUARES.length]);
+  const lines = [];
+  for (let r = maxRows; r >= 1; r--) {
+    let line = '';
+    for (let c = 0; c < values.length; c++) {
+      line += heights[c] >= r ? colors[c] : '⬛';
+    }
+    lines.push(line);
+  }
+  return lines.join('\n');
+}
 
 // { userId: xp } — en mémoire (source : Postgres si DATABASE_URL, sinon levels.json)
 let levelsData = {};
@@ -748,33 +771,32 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     const maxXp = sorted[0][1];
+    topColorOffset = (topColorOffset + 1) % COLOR_SQUARES.length; // couleurs différentes à chaque appel
 
-    // Couronnes Or / Argent / Bronze rose pour le top 3
+    // Couronnes Or / Argent / Bronze rose pour le podium
     const crownFor = (rank) => {
-      if (rank === 1) return { icon: '👑', tag: 'Or rose',      color: 0xFF4FA3 };
-      if (rank === 2) return { icon: '👑', tag: 'Argent rose',  color: 0xFFA6D0 };
-      if (rank === 3) return { icon: '👑', tag: 'Bronze rose',  color: 0xC97BA0 };
-      return { icon: PINK_DOTS[rank % PINK_DOTS.length], tag: `#${rank}`, color: PINKS[rank % PINKS.length] };
+      if (rank === 1) return { icon: '👑', tag: 'Or rose',     color: 0xFF4FA3 };
+      if (rank === 2) return { icon: '👑', tag: 'Argent rose', color: 0xFFA6D0 };
+      if (rank === 3) return { icon: '👑', tag: 'Bronze rose', color: 0xC97BA0 };
+      // Hors podium : couleur qui tourne aussi à chaque +top
+      return { icon: PINK_DOTS[rank % PINK_DOTS.length], tag: `#${rank}`, color: PINKS[(rank + topColorOffset) % PINKS.length] };
     };
 
-    // Mini graphe vertical (skyline), du plus petit (gauche) au plus grand (droite)
-    const skyline = sorted
-      .map(([, xp]) => BAR_BLOCKS[Math.min(BAR_BLOCKS.length - 1, Math.round((xp / maxXp) * (BAR_BLOCKS.length - 1)))])
-      .reverse()
-      .join(' ');
+    // Graphe en barres verticales colorées — du plus petit (gauche) au plus grand (droite)
+    const valuesAsc = sorted.slice().reverse().map(([, xp]) => xp);
+    const chart = buildVerticalChart(valuesAsc, topColorOffset);
 
-    // En-tête du classement
     const header = new EmbedBuilder()
-      .setColor(PINK)
+      .setColor(PINKS[topColorOffset % PINKS.length])
       .setTitle('🏆🌸 Classement — Top 10')
       .setDescription(
-        `📈 **Activité** (du plus petit au plus grand)\n\`${skyline}\`\n\n` +
+        `📈 **Activité** (du plus petit au plus grand)\n${chart}\n\n` +
         `👑 **Or rose** · 👑 **Argent rose** · 👑 **Bronze rose** pour le podium !`,
       )
       .setFooter({ text: '🌸 Poppy Bot • +niv pour ton niveau détaillé' })
       .setTimestamp();
 
-    // Une carte par membre avec sa photo de profil — ordonné du plus petit au plus grand
+    // Une carte par membre avec sa photo de profil — du plus petit au plus grand
     const cards = [];
     for (let i = sorted.length - 1; i >= 0; i--) {
       const [id, xp] = sorted[i];
@@ -798,7 +820,7 @@ client.on(Events.MessageCreate, async (message) => {
       cards.push(card);
     }
 
-    // En-tête puis les 10 cartes (max 10 embeds par message)
+    // En-tête (graphe) puis les 10 cartes (max 10 embeds par message)
     await message.reply({ embeds: [header] });
     return message.channel.send({ embeds: cards });
   }
