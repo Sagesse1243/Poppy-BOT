@@ -137,12 +137,32 @@ function progressBar(pct) {
   return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
-/** Construit l'embed d'un sondage avec ses barres à jour. */
-function buildPollEmbed(poll) {
-  const total = poll.votes.size;
+/** Convertit "30s", "10m", "2h", "1j"/"1d" en millisecondes (null si invalide). */
+function parseDuration(token) {
+  const m = String(token).match(/^(\d+)\s*([smhjd])$/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  const unit = m[2].toLowerCase();
+  const mult = { s: 1000, m: 60000, h: 3600000, j: 86400000, d: 86400000 }[unit];
+  const ms = n * mult;
+  // Borne : 5s minimum, 7 jours maximum (limite setTimeout)
+  return Math.min(Math.max(ms, 5000), 7 * 86400000);
+}
+
+/** Calcule les comptes + indices gagnants d'un sondage. */
+function pollResults(poll) {
   const counts = poll.options.map((_, i) =>
     [...poll.votes.values()].filter((v) => v === i).length,
   );
+  const max = Math.max(0, ...counts);
+  const winners = counts.map((c, i) => (c === max && max > 0 ? i : -1)).filter((i) => i >= 0);
+  return { counts, max, winners };
+}
+
+/** Construit l'embed d'un sondage avec ses barres à jour. */
+function buildPollEmbed(poll) {
+  const total = poll.votes.size;
+  const { counts } = pollResults(poll);
 
   const lines = poll.options.map((opt, i) => {
     const c = counts[i];
@@ -150,12 +170,61 @@ function buildPollEmbed(poll) {
     return `${POLL_EMOJIS[i]} **${opt}**\n\`${progressBar(pct)}\` **${pct}%** · ${c} vote${c > 1 ? 's' : ''}`;
   });
 
+  // Ligne de compte à rebours (Discord met à jour le "dans X" automatiquement)
+  let header = '';
+  if (poll.endsAt) {
+    const unix = Math.floor(poll.endsAt / 1000);
+    header = `⏳ Se termine <t:${unix}:R>  (<t:${unix}:t>)\n\n`;
+  }
+
   return new EmbedBuilder()
     .setColor(PINK)
     .setTitle(`📊🌸 ${poll.question}`)
-    .setDescription(lines.join('\n\n'))
-    .setFooter({ text: `🗳️ ${total} vote${total > 1 ? 's' : ''} au total · 1 vote par personne · clique pour voter/changer` })
+    .setDescription(header + lines.join('\n\n'))
+    .setFooter({ text: `🗳️ ${total} vote${total > 1 ? 's' : ''} · 1 vote par personne · clique pour voter/changer` })
     .setTimestamp();
+}
+
+/** Construit l'embed de RÉSULTAT final d'un sondage terminé. */
+function buildPollResultEmbed(poll) {
+  const total = poll.votes.size;
+  const { counts, max, winners } = pollResults(poll);
+
+  let desc;
+  if (total === 0 || winners.length === 0) {
+    desc = '🤷 Aucun vote — pas de gagnant.';
+  } else if (winners.length === 1) {
+    const i = winners[0];
+    const pct = Math.round((max / total) * 100);
+    desc = `🏆 **${poll.options[i]}** remporte le sondage !\n${POLL_EMOJIS[i]} **${pct}%** · ${max} vote${max > 1 ? 's' : ''}`;
+  } else {
+    const names = winners.map((i) => `${POLL_EMOJIS[i]} **${poll.options[i]}**`).join('  ·  ');
+    desc = `🤝 Égalité entre : ${names}\n(${max} vote${max > 1 ? 's' : ''} chacun)`;
+  }
+
+  return new EmbedBuilder()
+    .setColor(PINK)
+    .setTitle('🏁🌸 Sondage terminé — Résultat')
+    .setDescription(desc)
+    .setFooter({ text: `🗳️ ${total} vote${total > 1 ? 's' : ''} au total` })
+    .setTimestamp();
+}
+
+/** Termine un sondage : affiche le résultat, fige les barres, retire les boutons. */
+async function endPoll(pollId) {
+  const poll = polls.get(pollId);
+  if (!poll) return;
+  polls.delete(pollId);
+  try {
+    const channel = await client.channels.fetch(poll.channelId);
+    const msg = await channel.messages.fetch(poll.messageId);
+    const finalEmbed = buildPollEmbed({ ...poll, endsAt: null }); // fige sans compte à rebours
+    finalEmbed.setTitle(`📊 ${poll.question} (terminé)`);
+    await msg.edit({ embeds: [finalEmbed], components: [] }); // retire les boutons
+    await channel.send({ embeds: [buildPollResultEmbed(poll)] });
+  } catch (e) {
+    console.error('[SONDAGE] Erreur fin de sondage :', e.message);
+  }
 }
 
 /** Construit les rangées de boutons d'un sondage (max 5 par rangée). */
@@ -543,7 +612,9 @@ client.on(Events.MessageCreate, async (message) => {
         },
         {
           name: '📊🌸 Sondage',
-          value: `\`${PREFIX}sondage Question | Choix A | Choix B\` — Sondage à barres temps réel (2 à 10 choix)`,
+          value:
+            `\`${PREFIX}sondage Question | Choix A | Choix B\` — barres temps réel (2 à 10 choix)\n` +
+            `\`${PREFIX}sondage 30m Question | A | B\` — avec minuteur (\`s\`/\`m\`/\`h\`/\`j\`) + résultat auto`,
           inline: false,
         },
         {
@@ -570,24 +641,46 @@ client.on(Events.MessageCreate, async (message) => {
     if (parts.length < 3) {
       return message.reply({
         embeds: [pe(
-          `❌ Format : \`${PREFIX}sondage Question | Choix A | Choix B\`\n` +
-          `> Exemple : \`${PREFIX}sondage On mange quoi ? | Pizza | Sushi | Tacos\`\n` +
-          `> (1 question + 2 à 10 choix, séparés par des \`|\`)`,
+          `❌ Format : \`${PREFIX}sondage [durée] Question | Choix A | Choix B\`\n` +
+          `> Exemple : \`${PREFIX}sondage 30m On mange quoi ? | Pizza | Sushi | Tacos\`\n` +
+          `> Durée optionnelle : \`30s\` \`10m\` \`2h\` \`1j\` · (1 question + 2 à 10 choix séparés par \`|\`)`,
         )],
       });
     }
 
-    const question = parts[0].slice(0, 240);
-    const options  = parts.slice(1, 11).map((o) => o.slice(0, 80)); // max 10 options
+    // Durée optionnelle en tête de la question (ex: "30m On mange quoi ?")
+    let question = parts[0];
+    let durationMs = null;
+    const firstWord = question.split(/\s+/)[0];
+    const parsed = parseDuration(firstWord);
+    if (parsed) {
+      durationMs = parsed;
+      question = question.slice(firstWord.length).trim();
+    }
+    if (!question) {
+      return message.reply({ embeds: [pe('❌ La question est vide. Format : `+sondage 30m Ta question | Choix A | Choix B`')] });
+    }
+
+    question = question.slice(0, 240);
+    const options = parts.slice(1, 11).map((o) => o.slice(0, 80)); // max 10 options
 
     const pollId = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
-    const poll = { question, options, votes: new Map(), authorId: message.author.id };
+    const poll = {
+      question, options, votes: new Map(), authorId: message.author.id,
+      channelId: message.channelId, messageId: null,
+      endsAt: durationMs ? Date.now() + durationMs : null,
+    };
     polls.set(pollId, poll);
 
-    await message.channel.send({
+    const sent = await message.channel.send({
       embeds: [buildPollEmbed(poll)],
       components: buildPollButtons(pollId, poll),
     });
+    poll.messageId = sent.id; // pour pouvoir éditer à la fin
+
+    // Programme la fin du sondage si une durée est définie
+    if (durationMs) setTimeout(() => endPoll(pollId), durationMs);
+
     message.delete().catch(() => {}); // nettoie la commande
     return;
   }
