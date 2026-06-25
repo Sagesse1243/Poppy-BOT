@@ -1234,50 +1234,106 @@ async function checkLives() {
 // ============================================================================
 //  4b. TIKTOK LIVE — Polling HTML (pas de WebSocket ni de serveur de signature)
 // ============================================================================
-let tiktokPollTimer = null;
+let tiktokPollTimer  = null;
+let tiktokConfirm    = 0;        // nombre de checks positifs consécutifs
+let tiktokLastAlert  = 0;        // timestamp (ms) du dernier ping envoyé
+const TIKTOK_COOLDOWN = 60 * 60 * 1000; // 1h entre deux alertes pour le même live
 
+/**
+ * Vérifie si le compte est en live sur TikTok.
+ * Exige un signal de STATUT ACTIF (pas juste un roomId qui apparaît aussi hors-live).
+ */
 async function checkTikTokIsLive(username) {
   try {
     const res = await fetch(`https://www.tiktok.com/@${username}/live`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
     });
-    if (!res.ok) return false;
+    if (!res.ok) return null; // null = erreur réseau (on ne change pas l'état)
     const html = await res.text();
-    return /roomId":"([0-9]+)"/.test(html) || /room_id=([0-9]+)/.test(html);
+
+    // Signal fort : statut explicite "en live actif"
+    const liveSignals = [
+      '"statusCode":0',          // statut 0 = live actif dans l'API TikTok
+      '"status":2',              // status 2 = LIVE_ROOM_STATUS_ALIVE
+      'LIVE_ROOM_STATUS_ALIVE',
+      '"isLiveBroadcast":true',
+    ];
+    // Signal d'exclusion : live terminé ou pas commencé
+    const offlineSignals = [
+      '"statusCode":4',
+      '"status":4',
+      'LIVE_ROOM_STATUS_ENDED',
+      '"isLiveBroadcast":false',
+    ];
+
+    const hasLive    = liveSignals.some((s)  => html.includes(s));
+    const hasOffline = offlineSignals.some((s) => html.includes(s));
+
+    if (hasOffline) return false;
+    if (hasLive)    return true;
+    return null; // page ambiguë (Cloudflare, JS-only) — on ne change pas l'état
   } catch {
-    return false;
+    return null;
   }
 }
 
 function startTikTokMonitor(username) {
   if (tiktokPollTimer) { clearInterval(tiktokPollTimer); tiktokPollTimer = null; }
-  liveState.tiktok = false;
+
+  // Réinitialise la confirmation mais PAS liveState.tiktok si c'est le même username
+  // (évite le re-ping au redémarrage si la personne était déjà en live)
+  tiktokConfirm = 0;
+  if (getConfig().tiktokUsername !== username) liveState.tiktok = false;
 
   if (!username) return;
-  console.log(`[TIKTOK] Debut du monitoring pour @${username} (polling toutes les ${LIVE_CHECK_INTERVAL / 60000} min)`);
+  console.log(`[TIKTOK] Monitoring @${username} (polling toutes les ${LIVE_CHECK_INTERVAL / 60000} min)`);
 
-  const poll = async (silent = false) => {
+  const poll = async () => {
     if (getConfig().tiktokUsername !== username) return;
-    const isLive = await checkTikTokIsLive(username);
-    if (isLive && !liveState.tiktok) {
-      liveState.tiktok = true;
-      if (silent) {
-        console.log(`[TIKTOK] @${username} deja en live au demarrage, pas d'alerte.`);
-      } else {
-        console.log(`[TIKTOK] @${username} est en live !`);
-        await sendTikTokAlert(username).catch((e) => console.error('[TIKTOK] Erreur alerte :', e.message));
+    const result = await checkTikTokIsLive(username);
+
+    if (result === null) {
+      // Page ambiguë → on ne touche pas à l'état, on remet la confirmation à 0
+      tiktokConfirm = 0;
+      return;
+    }
+
+    if (result === true && !liveState.tiktok) {
+      tiktokConfirm++;
+      // Exige 2 checks positifs consécutifs avant de considérer la personne en live
+      if (tiktokConfirm < 2) {
+        console.log(`[TIKTOK] @${username} semble en live (confirmation ${tiktokConfirm}/2)…`);
+        return;
       }
-    } else if (!isLive && liveState.tiktok) {
+      liveState.tiktok = true;
+      tiktokConfirm = 0;
+
+      // Cooldown : ne pas re-pinger si on a déjà alerté il y a moins d'1h
+      const now = Date.now();
+      if (now - tiktokLastAlert < TIKTOK_COOLDOWN) {
+        console.log(`[TIKTOK] @${username} en live mais cooldown actif, pas de re-ping.`);
+        return;
+      }
+      tiktokLastAlert = now;
+      console.log(`[TIKTOK] @${username} est en live ! (confirmé 2/2)`);
+      await sendTikTokAlert(username).catch((e) => console.error('[TIKTOK] Erreur alerte :', e.message));
+
+    } else if (result === false && liveState.tiktok) {
       liveState.tiktok = false;
-      console.log(`[TIKTOK] @${username} a termine son live.`);
+      tiktokConfirm = 0;
+      console.log(`[TIKTOK] @${username} a terminé son live.`);
+
+    } else {
+      // Pas de changement d'état → on remet la confirmation à 0
+      tiktokConfirm = 0;
     }
   };
 
-  poll(true); // premier check silencieux : initialise l'etat sans ping
+  poll(); // premier check immédiat (pas de paramètre "silent", le cooldown gère tout)
   tiktokPollTimer = setInterval(poll, LIVE_CHECK_INTERVAL);
 }
 
