@@ -782,23 +782,23 @@ client.on(Events.MessageCreate, async (message) => {
       return { icon: PINK_DOTS[rank % PINK_DOTS.length], tag: `#${rank}`, color: PINKS[(rank + topColorOffset) % PINKS.length] };
     };
 
-    // Graphe en barres verticales colorées — du plus petit (gauche) au plus grand (droite)
-    const valuesAsc = sorted.slice().reverse().map(([, xp]) => xp);
-    const chart = buildVerticalChart(valuesAsc, topColorOffset);
+    // Graphe en barres verticales colorées — du plus grand (gauche) au plus petit (droite)
+    const valuesDesc = sorted.map(([, xp]) => xp);
+    const chart = buildVerticalChart(valuesDesc, topColorOffset);
 
     const header = new EmbedBuilder()
       .setColor(PINKS[topColorOffset % PINKS.length])
       .setTitle('🏆🌸 Classement — Top 10')
       .setDescription(
-        `📈 **Activité** (du plus petit au plus grand)\n${chart}\n\n` +
+        `📈 **Activité** (du plus grand au plus petit)\n${chart}\n\n` +
         `👑 **Or rose** · 👑 **Argent rose** · 👑 **Bronze rose** pour le podium !`,
       )
       .setFooter({ text: '🌸 Poppy Bot • +niv pour ton niveau détaillé' })
       .setTimestamp();
 
-    // Une carte par membre avec sa photo de profil — du plus petit au plus grand
+    // Une carte par membre avec sa photo de profil — du #1 (premier) au #10 (dernier)
     const cards = [];
-    for (let i = sorted.length - 1; i >= 0; i--) {
+    for (let i = 0; i < sorted.length; i++) {
       const [id, xp] = sorted[i];
       const lvl = levelFromXp(xp);
       const rank = i + 1;
