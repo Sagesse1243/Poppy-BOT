@@ -47,7 +47,14 @@ const {
 const PREFIX = '+';
 const OWNERS_FILE = path.join(__dirname, 'owners.json');
 const CONFIG_FILE = path.join(__dirname, 'config.json');
+const LEVELS_FILE = path.join(__dirname, 'levels.json');
 const LIVE_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+// ----- Système de niveaux -----
+const LEVELUP_CHANNEL_ID = '1519762619169509386'; // salon des annonces de level-up
+const XP_PER_MESSAGE = 2;       // XP par message
+const XP_PER_VOICE_MIN = 4;     // XP par minute en vocal (x2) — rien si seul
+const VOICE_TICK_MS = 60 * 1000; // intervalle d'attribution XP vocal
 
 // ----------------------------------------------------------------------------
 //  HELPERS DE PERSISTANCE
@@ -119,6 +126,76 @@ function pe(description, title) {
   const e = new EmbedBuilder().setColor(PINK).setDescription(description);
   if (title) e.setTitle(title);
   return e;
+}
+
+// ----------------------------------------------------------------------------
+//  SYSTÈME DE NIVEAUX (XP écrit + vocal, courbe exponentielle)
+// ----------------------------------------------------------------------------
+
+// Palette de roses pour le classement
+const PINKS = [0xFF1493, 0xFF4FA3, 0xFF77B5, 0xFF9ECF, 0xFFC0DD];
+// Cercles roses pour décorer les rangs
+const PINK_DOTS = ['🩷', '💗', '💖', '💓', '💕'];
+// Caractères de hauteur croissante pour le mini graphe vertical
+const BAR_BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+// { userId: xp } — chargé depuis levels.json
+let levelsData = readJSON(LEVELS_FILE, {});
+let levelsDirty = false;
+
+function saveLevelsNow() {
+  if (!levelsDirty) return;
+  writeJSON(LEVELS_FILE, levelsData);
+  levelsDirty = false;
+}
+
+/** XP cumulée nécessaire pour ATTEINDRE un niveau donné (courbe exponentielle). */
+function xpToReach(level) {
+  let total = 0;
+  for (let l = 1; l <= level; l++) total += Math.round(100 * Math.pow(1.3, l - 1));
+  return total;
+}
+
+/** Niveau correspondant à une quantité d'XP. */
+function levelFromXp(xp) {
+  let level = 0;
+  while (xp >= xpToReach(level + 1)) level++;
+  return level;
+}
+
+/**
+ * Ajoute de l'XP à un membre. Renvoie le nouveau niveau s'il a monté, sinon null.
+ */
+function addXp(userId, amount) {
+  const before = levelFromXp(levelsData[userId] || 0);
+  levelsData[userId] = (levelsData[userId] || 0) + amount;
+  levelsDirty = true;
+  const after = levelFromXp(levelsData[userId]);
+  return after > before ? after : null;
+}
+
+/** Envoie l'annonce de passage de niveau dans le salon dédié. */
+async function announceLevelUp(memberOrUser, newLevel) {
+  try {
+    const user = memberOrUser.user ?? memberOrUser; // GuildMember -> .user, sinon User
+    const channel = await client.channels.fetch(LEVELUP_CHANNEL_ID);
+    if (!channel || !channel.isTextBased()) return;
+    const embed = new EmbedBuilder()
+      .setColor(PINKS[newLevel % PINKS.length])
+      .setTitle('🎉🌸 Niveau supérieur !')
+      .setDescription(`${PINK_DOTS[newLevel % PINK_DOTS.length]} <@${user.id}> passe **niveau ${newLevel}** ! Bravo 💗`)
+      .setThumbnail(user.displayAvatarURL({ size: 256 }))
+      .setTimestamp();
+    await channel.send({ content: `<@${user.id}>`, embeds: [embed], allowedMentions: { users: [user.id] } });
+  } catch (e) {
+    console.error('[NIVEAU] Erreur annonce :', e.message);
+  }
+}
+
+/** Barre de progression horizontale (largeur paramétrable). */
+function xpBar(pct, width = 16) {
+  const filled = Math.round((pct / 100) * width);
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
 // ----------------------------------------------------------------------------
@@ -510,6 +587,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,   // Privileged Intent — activer dans le Developer Portal
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates, // requis pour l'XP vocal
     GatewayIntentBits.MessageContent, // Privileged Intent — activer dans le Developer Portal
   ],
   partials: [Partials.Channel],
@@ -520,6 +598,11 @@ const client = new Client({
 // ============================================================================
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot || !message.guild) return;
+
+  // ---- XP écrit : 2 XP par message ----
+  const gainedLevel = addXp(message.author.id, XP_PER_MESSAGE);
+  if (gainedLevel !== null) announceLevelUp(message.member ?? message.author, gainedLevel);
+
   if (!message.content.startsWith(PREFIX)) return;
 
   const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
@@ -574,6 +657,86 @@ client.on(Events.MessageCreate, async (message) => {
       promptChannelId: prompt.channelId,
     });
     return;
+  }
+
+  // ---- +niv [@membre] : niveau et XP d'un membre ----
+  if (command === 'niv' || command === 'niveau' || command === 'level' || command === 'rank') {
+    const targetId = parseUserId(args[0]) || message.author.id;
+    const member = await message.guild.members.fetch(targetId).catch(() => null);
+    const user = member ? member.user : message.author;
+
+    const xp = levelsData[targetId] || 0;
+    const level = levelFromXp(xp);
+    const curBase = xpToReach(level);
+    const nextBase = xpToReach(level + 1);
+    const into = xp - curBase;
+    const need = nextBase - curBase;
+    const pct = need ? Math.round((into / need) * 100) : 0;
+
+    // Rang du membre dans le classement
+    const sorted = Object.entries(levelsData).sort((a, b) => b[1] - a[1]);
+    const rank = sorted.findIndex(([id]) => id === targetId) + 1;
+
+    const embed = new EmbedBuilder()
+      .setColor(PINKS[level % PINKS.length])
+      .setTitle(`${PINK_DOTS[level % PINK_DOTS.length]} Niveau de ${user.username}`)
+      .setThumbnail(user.displayAvatarURL({ size: 256 }))
+      .setDescription(
+        `**🏆 Niveau :** ${level}\n` +
+        `**✨ XP :** ${xp}\n` +
+        `**📊 Classement :** ${rank > 0 ? `#${rank}` : '—'}\n\n` +
+        `**Progression vers le niveau ${level + 1}**\n` +
+        `\`${xpBar(pct)}\` **${pct}%**\n` +
+        `${into} / ${need} XP`,
+      )
+      .setFooter({ text: '🌸 Poppy Bot • Niveaux' })
+      .setTimestamp();
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ---- +top : classement (top 10) avec graphe vertical ----
+  if (command === 'top' || command === 'classement' || command === 'leaderboard') {
+    const sorted = Object.entries(levelsData)
+      .filter(([, xp]) => xp > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10); // top 10 (du plus grand au plus petit)
+
+    if (sorted.length === 0) {
+      return message.reply({ embeds: [pe('📊 Aucune activité enregistrée pour le moment. Discutez un peu ! 🌸')] });
+    }
+
+    const maxXp = sorted[0][1];
+
+    // Mini graphe vertical (skyline) : une colonne par membre, hauteur ∝ XP
+    const skyline = sorted
+      .map(([, xp]) => BAR_BLOCKS[Math.min(BAR_BLOCKS.length - 1, Math.round((xp / maxXp) * (BAR_BLOCKS.length - 1)))])
+      .reverse() // du plus petit (gauche) au plus grand (droite)
+      .join(' ');
+
+    // Résolution des pseudos
+    const lines = [];
+    for (let i = sorted.length - 1; i >= 0; i--) { // du plus petit au plus grand
+      const [id, xp] = sorted[i];
+      const lvl = levelFromXp(xp);
+      const member = await message.guild.members.fetch(id).catch(() => null);
+      const name = member ? member.user.username : `Inconnu (${id})`;
+      const rank = i + 1;
+      const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `\`#${rank}\``;
+      const barLen = Math.max(1, Math.round((xp / maxXp) * 12));
+      const bar = '│'.repeat(barLen); // lignes verticales proportionnelles
+      lines.push(`${medal} ${PINK_DOTS[lvl % PINK_DOTS.length]} **${name}** — Niv. ${lvl} · ${xp} XP\n\`${bar}\``);
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(PINK)
+      .setTitle('🏆🌸 Classement — Top 10')
+      .setDescription(
+        `📈 **Activité** (du plus petit au plus grand)\n\`${skyline}\`\n\n` +
+        lines.join('\n'),
+      )
+      .setFooter({ text: '🌸 Poppy Bot • +niv pour ton niveau détaillé' })
+      .setTimestamp();
+    return message.reply({ embeds: [embed] });
   }
 
   // ---- +pp [url] (ou image jointe) : change la photo de profil du bot ----
@@ -659,6 +822,13 @@ client.on(Events.MessageCreate, async (message) => {
           value:
             `\`${PREFIX}sondage Question | Choix A | Choix B\` — barres temps réel (2 à 10 choix)\n` +
             `\`${PREFIX}sondage 30m Question | A | B\` — avec minuteur (\`s\`/\`m\`/\`h\`/\`j\`) + résultat auto`,
+          inline: false,
+        },
+        {
+          name: '🏆🌸 Niveaux',
+          value:
+            `\`${PREFIX}top\` — Classement Top 10 (XP écrit + vocal)\n` +
+            `\`${PREFIX}niv\` ou \`${PREFIX}niv @membre\` — Niveau détaillé d'un membre`,
           inline: false,
         },
         {
@@ -1628,7 +1798,29 @@ client.once(Events.ClientReady, async (c) => {
 
   // TikTok : connexion WebSocket persistante (event-driven, pas de polling)
   startTikTokMonitor(config.tiktokUsername);
+
+  // XP vocal : toutes les minutes, +4 XP aux membres en vocal NON seuls
+  setInterval(() => {
+    for (const guild of client.guilds.cache.values()) {
+      for (const channel of guild.channels.cache.values()) {
+        if (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice) continue;
+        const humans = channel.members.filter((m) => !m.user.bot);
+        if (humans.size < 2) continue; // seul -> rien
+        for (const member of humans.values()) {
+          const gained = addXp(member.id, XP_PER_VOICE_MIN);
+          if (gained !== null) announceLevelUp(member, gained);
+        }
+      }
+    }
+  }, VOICE_TICK_MS);
+
+  // Sauvegarde de l'XP toutes les 15s (si modifié)
+  setInterval(saveLevelsNow, 15000);
 });
+
+// Sauvegarde finale propre à l'arrêt
+process.on('SIGINT',  () => { saveLevelsNow(); process.exit(0); });
+process.on('SIGTERM', () => { saveLevelsNow(); process.exit(0); });
 
 if (!process.env.DISCORD_TOKEN) {
   console.error('[FATAL] DISCORD_TOKEN est requis dans le fichier .env');
