@@ -806,8 +806,13 @@ client.on(Events.MessageCreate, async (message) => {
       const user = member ? member.user : null;
       const name = user ? user.username : `Inconnu (${id})`;
       const { icon, tag, color } = crownFor(rank);
-      const barLen = Math.max(1, Math.round((xp / maxXp) * 14));
-      const bar = '│'.repeat(barLen); // lignes verticales proportionnelles
+
+      // Barre de progression vers le niveau suivant
+      const curBase = xpToReach(lvl);
+      const nextBase = xpToReach(lvl + 1);
+      const into = xp - curBase;
+      const need = nextBase - curBase;
+      const pct = need ? Math.round((into / need) * 100) : 0;
 
       const card = new EmbedBuilder()
         .setColor(color)
@@ -816,7 +821,11 @@ client.on(Events.MessageCreate, async (message) => {
           iconURL: user ? user.displayAvatarURL({ size: 64 }) : undefined,
         })
         .setThumbnail(user ? user.displayAvatarURL({ size: 128 }) : null)
-        .setDescription(`🏆 **Niveau ${lvl}** · ✨ ${xp} XP\n\`${bar}\``);
+        .setDescription(
+          `🏆 **Niveau ${lvl}** · ✨ ${xp} XP\n` +
+          `\`${xpBar(pct)}\` **${pct}%**\n` +
+          `➡️ ${into} / ${need} XP vers le niveau ${lvl + 1}`,
+        );
       cards.push(card);
     }
 
