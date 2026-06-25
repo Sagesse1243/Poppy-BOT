@@ -122,6 +122,61 @@ function pe(description, title) {
 }
 
 // ----------------------------------------------------------------------------
+//  SONDAGES (barres temps réel) — commande +sondage
+// ----------------------------------------------------------------------------
+
+// Etat en mémoire des sondages actifs : pollId -> { question, options, votes:Map<userId,idx>, authorId }
+const polls = new Map();
+// Emojis-lettres pour numéroter les options
+const POLL_EMOJIS = ['🇦', '🇧', '🇨', '🇩', '🇪', '🇫', '🇬', '🇭', '🇮', '🇯'];
+
+/** Construit une barre de progression visuelle (largeur 18). */
+function progressBar(pct) {
+  const width = 18;
+  const filled = Math.round((pct / 100) * width);
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
+/** Construit l'embed d'un sondage avec ses barres à jour. */
+function buildPollEmbed(poll) {
+  const total = poll.votes.size;
+  const counts = poll.options.map((_, i) =>
+    [...poll.votes.values()].filter((v) => v === i).length,
+  );
+
+  const lines = poll.options.map((opt, i) => {
+    const c = counts[i];
+    const pct = total ? Math.round((c / total) * 100) : 0;
+    return `${POLL_EMOJIS[i]} **${opt}**\n\`${progressBar(pct)}\` **${pct}%** · ${c} vote${c > 1 ? 's' : ''}`;
+  });
+
+  return new EmbedBuilder()
+    .setColor(PINK)
+    .setTitle(`📊🌸 ${poll.question}`)
+    .setDescription(lines.join('\n\n'))
+    .setFooter({ text: `🗳️ ${total} vote${total > 1 ? 's' : ''} au total · 1 vote par personne · clique pour voter/changer` })
+    .setTimestamp();
+}
+
+/** Construit les rangées de boutons d'un sondage (max 5 par rangée). */
+function buildPollButtons(pollId, poll) {
+  const rows = [];
+  for (let i = 0; i < poll.options.length; i += 5) {
+    const row = new ActionRowBuilder();
+    for (let j = i; j < Math.min(i + 5, poll.options.length); j++) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`poll:${pollId}:${j}`)
+          .setEmoji(POLL_EMOJIS[j])
+          .setStyle(ButtonStyle.Secondary),
+      );
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+// ----------------------------------------------------------------------------
 //  RESUME IA (Google Gemini, gratuit) — commande +resume
 // ----------------------------------------------------------------------------
 
@@ -487,6 +542,11 @@ client.on(Events.MessageCreate, async (message) => {
           inline: false,
         },
         {
+          name: '📊🌸 Sondage',
+          value: `\`${PREFIX}sondage Question | Choix A | Choix B\` — Sondage à barres temps réel (2 à 10 choix)`,
+          inline: false,
+        },
+        {
           name: '🛠️🩷 Utilitaire',
           value: `\`${PREFIX}tools\` — Afficher ce menu`,
           inline: false,
@@ -495,6 +555,41 @@ client.on(Events.MessageCreate, async (message) => {
       .setFooter({ text: '🌸 Poppy Bot • Liste des commandes' })
       .setTimestamp();
     return message.reply({ embeds: [embed] });
+  }
+
+  // ---- +sondage Question | Choix A | Choix B | ... ----
+  if (command === 'sondage' || command === 'poll' || command === 'vote') {
+    if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
+    }
+
+    // Tout ce qui suit "+sondage", découpé sur les "|"
+    const raw = message.content.slice(PREFIX.length + command.length).trim();
+    const parts = raw.split('|').map((p) => p.trim()).filter((p) => p.length > 0);
+
+    if (parts.length < 3) {
+      return message.reply({
+        embeds: [pe(
+          `❌ Format : \`${PREFIX}sondage Question | Choix A | Choix B\`\n` +
+          `> Exemple : \`${PREFIX}sondage On mange quoi ? | Pizza | Sushi | Tacos\`\n` +
+          `> (1 question + 2 à 10 choix, séparés par des \`|\`)`,
+        )],
+      });
+    }
+
+    const question = parts[0].slice(0, 240);
+    const options  = parts.slice(1, 11).map((o) => o.slice(0, 80)); // max 10 options
+
+    const pollId = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+    const poll = { question, options, votes: new Map(), authorId: message.author.id };
+    polls.set(pollId, poll);
+
+    await message.channel.send({
+      embeds: [buildPollEmbed(poll)],
+      components: buildPollButtons(pollId, poll),
+    });
+    message.delete().catch(() => {}); // nettoie la commande
+    return;
   }
 
   // ---- +resume [nombre] [@membre] : resume IA des derniers messages ----
@@ -712,6 +807,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.update({
         embeds: [buildSayPromptEmbed(state.channelId ?? interaction.channelId, FONT_LABELS[state.font] ?? 'Normal')],
       });
+    }
+
+    // ---- Vote de sondage (OUVERT À TOUS, avant la restriction owner) ----
+    if (interaction.isButton() && interaction.customId.startsWith('poll:')) {
+      const [, pollId, idxStr] = interaction.customId.split(':');
+      const poll = polls.get(pollId);
+      if (!poll) {
+        return interaction.reply({ embeds: [pe('⚠️ Ce sondage a expiré (le bot a redémarré).')], flags: MessageFlags.Ephemeral });
+      }
+      const idx = parseInt(idxStr, 10);
+      const previous = poll.votes.get(interaction.user.id);
+      if (previous === idx) {
+        poll.votes.delete(interaction.user.id); // re-clic sur le même choix = retire le vote
+      } else {
+        poll.votes.set(interaction.user.id, idx);
+      }
+      // Met à jour l'embed en temps réel (les barres bougent)
+      return interaction.update({ embeds: [buildPollEmbed(poll)] });
     }
 
     if (interaction.isButton()) {
