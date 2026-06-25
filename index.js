@@ -597,7 +597,7 @@ client.on(Events.MessageCreate, async (message) => {
       });
     }
 
-    const status = await message.reply({ embeds: [pe('🖼️ Changement de la photo de profil… 🌸')] });
+    message.delete().catch(() => {});
     try {
       const res = await fetch(imageUrl);
       if (!res.ok) throw new Error('Image inaccessible (URL invalide ?).');
@@ -610,13 +610,13 @@ client.on(Events.MessageCreate, async (message) => {
         .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
         .setFooter({ text: '🌸 Poppy Bot' })
         .setTimestamp();
-      return status.edit({ embeds: [ok] });
+      return message.channel.send({ embeds: [ok] });
     } catch (err) {
       console.error('[PP] Erreur :', err);
       const reason = /rate/i.test(err.message ?? '')
         ? 'Trop de changements récents — Discord limite à ~2/heure. Réessaie plus tard.'
         : (err.message ?? String(err));
-      return status.edit({ embeds: [pe(`❌ Échec du changement de photo : ${reason}`)] });
+      return message.channel.send({ embeds: [pe(`❌ Échec : ${reason}`)] });
     }
   }
 
