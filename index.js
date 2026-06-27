@@ -834,6 +834,126 @@ client.on(Events.MessageCreate, async (message) => {
     return message.channel.send({ embeds: cards });
   }
 
+  // ---- +moov <#salon|id|nom> : déplace tout le monde de ton salon vocal vers un autre ----
+  if (command === 'moov' || command === 'move' || command === 'deplace') {
+    if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
+    }
+
+    // Salon source = le salon vocal où se trouve l'auteur
+    const sourceChannel = message.member?.voice?.channel;
+    if (!sourceChannel) {
+      return message.reply({ embeds: [pe('🔊 Tu dois être connecté à un salon vocal pour utiliser `+moov`.')] });
+    }
+
+    // Salon cible : mention <#id>, id brut, ou nom
+    const rawTarget = message.content.slice(PREFIX.length + command.length).trim();
+    if (!rawTarget) {
+      return message.reply({ embeds: [pe('📌 Indique le salon de destination : `+moov #salon` (ou son nom / ID).')] });
+    }
+
+    const idMatch = rawTarget.match(/(?:<#)?(\d{17,20})>?/);
+    let target = null;
+    if (idMatch) {
+      target = message.guild.channels.cache.get(idMatch[1]);
+    }
+    if (!target) {
+      const wanted = rawTarget.toLowerCase();
+      target = message.guild.channels.cache.find(
+        (c) => c.isVoiceBased?.() && c.name.toLowerCase() === wanted,
+      ) || message.guild.channels.cache.find(
+        (c) => c.isVoiceBased?.() && c.name.toLowerCase().includes(wanted),
+      );
+    }
+
+    if (!target || !target.isVoiceBased?.()) {
+      return message.reply({ embeds: [pe('❌ Salon vocal de destination introuvable.')] });
+    }
+    if (target.id === sourceChannel.id) {
+      return message.reply({ embeds: [pe('🤔 Tout le monde est déjà dans ce salon.')] });
+    }
+
+    const members = [...sourceChannel.members.values()];
+    let moved = 0;
+    const failed = [];
+    for (const m of members) {
+      try {
+        await m.voice.setChannel(target, `+moov par ${message.author.tag}`);
+        moved++;
+      } catch {
+        failed.push(m.user.username);
+      }
+    }
+
+    const embed = pe(
+      `✅ **${moved}** membre(s) déplacé(s) de **${sourceChannel.name}** vers **${target.name}**.` +
+      (failed.length ? `\n⚠️ Échec pour : ${failed.join(', ')}` : ''),
+      '🚚 Déplacement vocal',
+    );
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ---- +moove <#source> <#dest> : déplace tout le monde d'un salon vocal choisi vers un autre ----
+  if (command === 'moove' || command === 'movee' || command === 'deplacee') {
+    if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
+      return message.reply({ embeds: [pe('⛔ Cette commande est réservée aux owners.')] });
+    }
+
+    // Résout un salon vocal depuis un jeton : mention <#id>, id brut, ou nom
+    const resolveVoice = (token) => {
+      if (!token) return null;
+      const idMatch = token.match(/(?:<#)?(\d{17,20})>?/);
+      if (idMatch) {
+        const byId = message.guild.channels.cache.get(idMatch[1]);
+        if (byId?.isVoiceBased?.()) return byId;
+      }
+      const wanted = token.toLowerCase();
+      return message.guild.channels.cache.find(
+        (c) => c.isVoiceBased?.() && c.name.toLowerCase() === wanted,
+      ) || message.guild.channels.cache.find(
+        (c) => c.isVoiceBased?.() && c.name.toLowerCase().includes(wanted),
+      ) || null;
+    };
+
+    // Deux salons attendus : source puis destination
+    const source = resolveVoice(args[0]);
+    const target = resolveVoice(args[1]);
+
+    if (!source || !target) {
+      return message.reply({
+        embeds: [pe(
+          '📌 Indique les deux salons : `+moove #source #destination` (mentions, noms ou IDs).',
+        )],
+      });
+    }
+    if (source.id === target.id) {
+      return message.reply({ embeds: [pe('🤔 Le salon source et la destination sont identiques.')] });
+    }
+
+    const members = [...source.members.values()];
+    if (members.length === 0) {
+      return message.reply({ embeds: [pe(`🔇 Le salon **${source.name}** est vide.`)] });
+    }
+
+    let moved = 0;
+    const failed = [];
+    for (const m of members) {
+      try {
+        await m.voice.setChannel(target, `+moove par ${message.author.tag}`);
+        moved++;
+      } catch {
+        failed.push(m.user.username);
+      }
+    }
+
+    const embed = pe(
+      `✅ **${moved}** membre(s) déplacé(s) de **${source.name}** vers **${target.name}**.` +
+      (failed.length ? `\n⚠️ Échec pour : ${failed.join(', ')}` : ''),
+      '🚚 Déplacement vocal',
+    );
+    return message.reply({ embeds: [embed] });
+  }
+
   // ---- +pp [url] (ou image jointe) : change la photo de profil du bot ----
   if (command === 'pp' || command === 'avatar' || command === 'photo') {
     if (!isOwnerOrCoOwner(message.guild, message.author.id)) {
